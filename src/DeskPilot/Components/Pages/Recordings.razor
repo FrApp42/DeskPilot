@@ -1,0 +1,75 @@
+@page "/recordings"
+@attribute [Authorize(Policy = ConsoleAuth.AdminPolicy)]
+@rendermode InteractiveServer
+@inherits AdminPage
+@inject IConfiguration Config
+@inject SettingsService Settings
+
+<PageTitle>Enregistrements · DeskPilot</PageTitle>
+<Toasts />
+
+<div class="page-head">
+    <div>
+        <h1>Enregistrements</h1>
+        <p>Sessions enregistrées par les clients et téléversées sur ce serveur.</p>
+    </div>
+</div>
+
+@if (!enabled)
+{
+    <div class="notice warn">Le téléversement des enregistrements est désactivé. Activez-le dans <a href="/settings">Paramètres</a>, puis imposez <code>allow-auto-record-incoming = Y</code> avec une stratégie.</div>
+}
+
+<section class="panel">
+    @if (rows.Count == 0)
+    {
+        <div class="empty">Aucun enregistrement reçu.</div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Fichier</th><th>État</th><th class="num">Taille</th><th>Reçu</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var r in rows)
+                    {
+                        <tr>
+                            <td><code>@r.FileName</code><span class="sub">@r.Ip</span></td>
+                            <td>@if (r.Completed) { <span class="chip live">Terminé</span> } else { <span class="chip">En cours</span> }</td>
+                            <td class="num">@Fmt.Size(r.Size)</td>
+                            <td>@Fmt.Date(r.CreatedAt)</td>
+                            <td class="act">
+                                <a class="btn link" href="/console/recordings/@r.Id" download>Télécharger</a>
+                                <button class="btn link danger" @onclick="() => DeleteAsync(r)">Supprimer</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    private List<Recording> rows = [];
+    private bool enabled;
+
+    protected override async Task LoadAsync()
+    {
+        enabled = await Settings.GetBoolAsync(SettingKeys.AllowRecordUpload);
+        await using var db = await DbFactory.CreateDbContextAsync();
+        rows = await db.Recordings.AsNoTracking().OrderByDescending(r => r.Id).Take(500).ToListAsync();
+    }
+
+    private async Task DeleteAsync(Recording r)
+    {
+        var dir = AppPaths.Records(Config);
+        var ok = await SaveAsync(async db =>
+        {
+            var path = Path.Combine(dir, Path.GetFileName(r.FileName));
+            if (File.Exists(path)) File.Delete(path);
+            db.Recordings.Remove(await db.Recordings.FirstAsync(x => x.Id == r.Id));
+        }, "Enregistrement supprimé.", "Enregistrement supprimé", r.FileName);
+        if (ok) await LoadAsync();
+    }
+}

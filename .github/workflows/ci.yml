@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: deskpilot
+          POSTGRES_USER: deskpilot
+          POSTGRES_PASSWORD: deskpilot
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U deskpilot" --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build
+        run: dotnet publish src/DeskPilot/DeskPilot.csproj -c Release -o out
+      - name: Start server
+        run: |
+          cd out
+          nohup dotnet DeskPilot.dll > ../server.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:21114/healthz && exit 0; sleep 1; done
+          cat ../server.log; exit 1
+        env:
+          ASPNETCORE_HTTP_PORTS: "21114"
+          ConnectionStrings__Default: Host=localhost;Database=deskpilot;Username=deskpilot;Password=deskpilot
+          DeskPilot__AdminPassword: Ci-Admin-123
+          DeskPilot__DataPath: ${{ runner.temp }}/data
+      - name: API smoke test
+        run: python3 tests/smoke_test.py http://127.0.0.1:21114 admin Ci-Admin-123
+      - name: Server log
+        if: failure()
+        run: cat server.log
+
+  hbbs:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: deskpilot
+          POSTGRES_USER: deskpilot
+          POSTGRES_PASSWORD: deskpilot
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U deskpilot" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      PGPASSWORD: deskpilot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            hbbs
+            tests/hbbs-compat
+      - name: Unit tests (key exchange)
+        run: cargo test --lib deskpilot
+        working-directory: hbbs
+      - name: Build hbbs and the compatibility client
+        run: |
+          (cd hbbs && cargo build --bin hbbs)
+          (cd tests/hbbs-compat && cargo build)
+      - name: Start DeskPilot and hbbs
+        run: |
+          dotnet publish src/DeskPilot/DeskPilot.csproj -c Release -o out
+          (cd out && nohup dotnet DeskPilot.dll > ../deskpilot.log 2>&1 &)
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:21114/healthz && break; sleep 1; done
+          mkdir -p hbbs-run && cd hbbs-run
+          nohup ../hbbs/target/debug/hbbs > ../hbbs.log 2>&1 &
+          sleep 3
+        env:
+          ASPNETCORE_HTTP_PORTS: "21114"
+          ConnectionStrings__Default: Host=localhost;Database=deskpilot;Username=deskpilot;Password=deskpilot
+          DeskPilot__AdminPassword: Ci-Admin-123
+          DeskPilot__HbbsSecret: ci-secret
+          DeskPilot__DataPath: ${{ runner.temp }}/data
+          DESKPILOT_URL: http://127.0.0.1:21114
+          DESKPILOT_SECRET: ci-secret
+      - name: hbbs ↔ DeskPilot integration test
+        run: |
+          python3 tests/hbbs_integration.py --compat tests/hbbs-compat/target/debug/hbbs-compat \
+            --key "$(cat hbbs-run/id_ed25519.pub)" --password Ci-Admin-123 \
+            --psql "psql -h localhost -U deskpilot -d deskpilot"
+      - name: Logs
+        if: failure()
+        run: cat deskpilot.log hbbs.log
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t deskpilot:ci .
+      - run: docker build -t deskpilot-hbbs:ci -f hbbs/Dockerfile.deskpilot hbbs

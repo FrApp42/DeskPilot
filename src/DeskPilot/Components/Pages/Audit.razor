@@ -1,0 +1,228 @@
+@page "/audit"
+@attribute [Authorize(Policy = ConsoleAuth.AdminPolicy)]
+@rendermode InteractiveServer
+@inherits AdminPage
+
+<PageTitle>Journaux · DeskPilot</PageTitle>
+<Toasts />
+
+<div class="page-head">
+    <div>
+        <h1>Journaux</h1>
+        <p>Envoyés par les appareils contrôlés : qui s'est connecté, quels fichiers ont été transférés, quelles alertes de sécurité ont été levées.</p>
+    </div>
+    <div class="actions">
+        @if (tab == "conn") { <a class="btn" href="/console/export/conn-audit.csv" download>Exporter en CSV</a> }
+        @if (tab == "file") { <a class="btn" href="/console/export/file-audit.csv" download>Exporter en CSV</a> }
+    </div>
+</div>
+
+<div class="tabs" role="tablist">
+    @foreach (var (key, label) in Tabs)
+    {
+        <button role="tab" class="@(tab == key ? "on" : "")" aria-selected="@(tab == key)" @onclick="() => SwitchAsync(key)">@label</button>
+    }
+</div>
+
+<section class="panel">
+    <div class="panel-head">
+        <div class="toolbar">
+            <input type="search" placeholder="@(tab == "console" ? "Utilisateur ou action" : "ID d'appareil ou de pair")" @bind="filter" @bind:event="oninput" @bind:after="Reload" aria-label="Filtrer" />
+        </div>
+        <span class="hint">@total entrée(s)</span>
+    </div>
+
+    @if (total == 0)
+    {
+        <div class="empty">Aucune entrée. Vérifiez que le serveur API est bien renseigné dans les clients contrôlés.</div>
+    }
+    else if (tab == "conn")
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Appareil contrôlé</th><th>Depuis</th><th>Compte</th><th>Type</th><th>Début</th><th class="num">Durée</th><th>Note</th></tr></thead>
+                <tbody>
+                    @foreach (var a in conns)
+                    {
+                        <tr>
+                            <td><Rid Value="@a.RustdeskId" /><span class="sub">connexion n° @a.ConnId</span></td>
+                            <td>@(a.PeerName ?? "—")<span class="sub">@(a.PeerId is null ? "" : a.PeerId + ", ")@a.Ip</span></td>
+                            <td>@(a.ConnAuditRef is not null && accounts.TryGetValue(a.ConnAuditRef, out var who) ? who : "—")</td>
+                            <td>@(a.AuthedAt is null ? "Non authentifiée" : Fmt.ConnType(a.Type))</td>
+                            <td>@Fmt.Date(a.CreatedAt)</td>
+                            <td class="num">@(a.ClosedAt is null ? "—" : Fmt.Duration(a.CreatedAt, a.ClosedAt))</td>
+                            <td>@a.Note</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else if (tab == "auth")
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Appareil visé</th><th>Compte</th><th>Depuis</th><th>Décision</th><th>Date</th></tr></thead>
+                <tbody>
+                    @foreach (var d in decisions)
+                    {
+                        <tr>
+                            <td><Rid Value="@d.TargetId" /><span class="sub">@Fmt.RequestType(d.ConnType)</span></td>
+                            <td>@(d.UserName ?? "Non connecté")</td>
+                            <td>@d.Ip</td>
+                            <td>
+                                @if (d.Allowed)
+                                {
+                                    <span class="chip live">Autorisée</span>
+                                    @if (d.Permissions != 0) { <span class="sub">Sans : @string.Join(", ", Permissions.Labels((ulong)d.Permissions)).ToLowerInvariant()</span> }
+                                }
+                                else
+                                {
+                                    <span class="chip danger">Refusée</span><span class="sub">@d.Reason</span>
+                                }
+                            </td>
+                            <td>@Fmt.Date(d.CreatedAt)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else if (tab == "file")
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Appareil contrôlé</th><th>Pair</th><th>Sens</th><th>Chemin</th><th>Fichiers</th><th>Date</th></tr></thead>
+                <tbody>
+                    @foreach (var a in files)
+                    {
+                        <tr>
+                            <td><Rid Value="@a.RustdeskId" /></td>
+                            <td><Rid Value="@a.PeerId" /></td>
+                            <td>@(a.Type == 0 ? "Envoi vers le pair" : "Réception depuis le pair")</td>
+                            <td><code>@a.Path</code></td>
+                            <td>@FileSummary(a.Info)</td>
+                            <td>@Fmt.Date(a.CreatedAt)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else if (tab == "alarm")
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Appareil</th><th>Alarme</th><th>Détails</th><th>Date</th></tr></thead>
+                <tbody>
+                    @foreach (var a in alarms)
+                    {
+                        <tr>
+                            <td><Rid Value="@a.RustdeskId" /></td>
+                            <td><span class="chip warn">@Fmt.Alarm(a.Typ)</span></td>
+                            <td><code>@a.Info</code></td>
+                            <td>@Fmt.Date(a.CreatedAt)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Utilisateur</th><th>Action</th><th>Cible</th><th>Date</th></tr></thead>
+                <tbody>
+                    @foreach (var a in consoleLog)
+                    {
+                        <tr><td>@a.Actor</td><td>@a.Action</td><td>@a.Target</td><td>@Fmt.Date(a.CreatedAt)<span class="sub">@a.Ip</span></td></tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    <Pager Page="page" PageSize="pageSize" Total="total" PageChanged="GoPage" />
+</section>
+
+@code {
+    private static readonly (string, string)[] Tabs = [("conn", "Connexions"), ("auth", "Autorisations"), ("file", "Transferts de fichiers"), ("alarm", "Alarmes"), ("console", "Console")];
+    private string tab = "conn", filter = "";
+    private int page = 1, total;
+    private const int pageSize = 50;
+    private List<ConnAudit> conns = [];
+    private List<FileAudit> files = [];
+    private List<AlarmAudit> alarms = [];
+    private List<ConsoleAudit> consoleLog = [];
+    private List<ConnectDecision> decisions = [];
+    private Dictionary<string, string> accounts = [];
+
+    protected override Task LoadAsync() => QueryAsync();
+    private async Task SwitchAsync(string t) { tab = t; page = 1; filter = ""; await QueryAsync(); }
+    private async Task Reload() { page = 1; await QueryAsync(); }
+    private async Task GoPage(int p) { page = p; await QueryAsync(); }
+
+    private async Task QueryAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var f = filter.Replace(" ", "").Trim();
+        var skip = (page - 1) * pageSize;
+        switch (tab)
+        {
+            case "conn":
+                var cq = db.ConnAudits.AsNoTracking();
+                if (f.Length > 0) cq = cq.Where(a => a.RustdeskId.Contains(f) || (a.PeerId != null && a.PeerId.Contains(f)));
+                total = await cq.CountAsync();
+                conns = await cq.OrderByDescending(a => a.Id).Skip(skip).Take(pageSize).ToListAsync();
+                // Which DeskPilot account opened the session (reference set by hbbs, echoed by the device).
+                var refs = conns.Where(c => c.ConnAuditRef != null).Select(c => c.ConnAuditRef!).ToList();
+                accounts = (await db.ConnectDecisions.Where(d => refs.Contains(d.AuditRef) && d.UserName != null)
+                        .Select(d => new { d.AuditRef, d.UserName }).ToListAsync())
+                    .DistinctBy(x => x.AuditRef).ToDictionary(x => x.AuditRef, x => x.UserName!);
+                break;
+            case "auth":
+                var dq = db.ConnectDecisions.AsNoTracking();
+                if (f.Length > 0) dq = dq.Where(d => d.TargetId.Contains(f) || (d.UserName != null && d.UserName.Contains(filter.Trim())));
+                total = await dq.CountAsync();
+                decisions = await dq.OrderByDescending(d => d.Id).Skip(skip).Take(pageSize).ToListAsync();
+                break;
+            case "file":
+                var fq = db.FileAudits.AsNoTracking();
+                if (f.Length > 0) fq = fq.Where(a => a.RustdeskId.Contains(f) || (a.PeerId != null && a.PeerId.Contains(f)));
+                total = await fq.CountAsync();
+                files = await fq.OrderByDescending(a => a.Id).Skip(skip).Take(pageSize).ToListAsync();
+                break;
+            case "alarm":
+                var aq = db.AlarmAudits.AsNoTracking();
+                if (f.Length > 0) aq = aq.Where(a => a.RustdeskId.Contains(f));
+                total = await aq.CountAsync();
+                alarms = await aq.OrderByDescending(a => a.Id).Skip(skip).Take(pageSize).ToListAsync();
+                break;
+            default:
+                var oq = db.ConsoleAudits.AsNoTracking();
+                if (filter.Trim().Length > 0)
+                {
+                    var t = $"%{filter.Trim()}%";
+                    oq = oq.Where(a => EF.Functions.ILike(a.Actor, t) || EF.Functions.ILike(a.Action, t) || EF.Functions.ILike(a.Target ?? "", t));
+                }
+                total = await oq.CountAsync();
+                consoleLog = await oq.OrderByDescending(a => a.Id).Skip(skip).Take(pageSize).ToListAsync();
+                break;
+        }
+    }
+
+    /// <summary>info is a JSON string: {"ip":..,"name":..,"num":n,"files":[[name,size],..]}</summary>
+    private static string FileSummary(string? info)
+    {
+        if (string.IsNullOrEmpty(info)) return "—";
+        try
+        {
+            var o = System.Text.Json.Nodes.JsonNode.Parse(info);
+            var num = o?["num"]?.GetValue<int>() ?? 0;
+            var first = o?["files"]?.AsArray().FirstOrDefault()?.AsArray().FirstOrDefault()?.ToString();
+            if (num == 0) return "—";
+            return num == 1 ? (string.IsNullOrEmpty(first) ? "1 fichier" : first) : $"{num} fichiers" + (string.IsNullOrEmpty(first) ? "" : $", dont {first}");
+        }
+        catch { return info.Length > 60 ? info[..60] + "…" : info; }
+    }
+}

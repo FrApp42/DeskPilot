@@ -1,0 +1,216 @@
+@page "/groups"
+@attribute [Authorize(Policy = ConsoleAuth.AdminPolicy)]
+@rendermode InteractiveServer
+@inherits AdminPage
+
+<PageTitle>Groupes · DeskPilot</PageTitle>
+<Toasts />
+
+<div class="page-head">
+    <div>
+        <h1>Groupes</h1>
+        <p>Les groupes d'utilisateurs définissent qui voit quoi dans l'onglet « Groupes » du client. Un groupe d'appareils peut être ouvert à un ou plusieurs groupes d'utilisateurs.</p>
+    </div>
+</div>
+
+<div class="grid-2">
+    <section class="panel">
+        <div class="panel-head">
+            <h2>Groupes d'utilisateurs</h2>
+            <button class="btn small" @onclick="NewUserGroup">Créer un groupe</button>
+        </div>
+        @if (userGroups.Count == 0)
+        {
+            <div class="empty">Sans groupe, chaque utilisateur ne voit que ses propres appareils.</div>
+        }
+        else
+        {
+            <table>
+                <thead><tr><th>Nom</th><th class="num">Membres</th><th>Accès aux groupes d'appareils</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var g in userGroups)
+                    {
+                        <tr>
+                            <td><strong>@g.Name</strong>@if (!string.IsNullOrEmpty(g.Note)) { <span class="sub">@g.Note</span> }</td>
+                            <td class="num">@g.Users.Count</td>
+                            <td>@(g.DeviceGroupAccesses.Count == 0 ? "—" : string.Join(", ", g.DeviceGroupAccesses.Select(a => a.DeviceGroup!.Name)))
+                                @if (g.DeniedPermissions.Count > 0) { <span class="sub">Sans : @string.Join(", ", Permissions.All.Where(p => g.DeniedPermissions.Contains(p.Key)).Select(p => p.Label.ToLowerInvariant()))</span> }</td>
+                            <td class="act"><button class="btn link" @onclick="() => EditUserGroup(g)">Modifier</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+
+    <section class="panel">
+        <div class="panel-head">
+            <h2>Groupes d'appareils</h2>
+            <button class="btn small" @onclick="NewDeviceGroup">Créer un groupe</button>
+        </div>
+        @if (deviceGroups.Count == 0)
+        {
+            <div class="empty">Regroupez les machines par site, service ou client. Le client peut aussi créer un groupe avec l'option preset-device-group-name.</div>
+        }
+        else
+        {
+            <table>
+                <thead><tr><th>Nom</th><th class="num">Appareils</th><th>Stratégie</th><th>Relais</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var g in deviceGroups)
+                    {
+                        <tr>
+                            <td><strong>@g.Name</strong>@if (!string.IsNullOrEmpty(g.Note)) { <span class="sub">@g.Note</span> }</td>
+                            <td class="num">@g.Devices.Count</td>
+                            <td>@(g.Strategy?.Name ?? "—")</td>
+                            <td>@(string.IsNullOrEmpty(g.RelayServer) ? "Par défaut" : g.RelayServer)</td>
+                            <td class="act"><button class="btn link" @onclick="() => EditDeviceGroup(g)">Modifier</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+</div>
+
+<Modal @bind-Open="editingUg" Title="@(ug.Id == 0 ? "Nouveau groupe d'utilisateurs" : "Groupe d'utilisateurs")">
+    <ChildContent>
+        <label class="field"><span>Nom</span><input type="text" @bind="ug.Name" /></label>
+        <label class="field"><span>Note</span><input type="text" @bind="ug.Note" /></label>
+        <fieldset style="border:0;padding:0;margin:0">
+            <legend style="font-weight:550;font-size:.9rem;margin-bottom:.4rem">Groupes d'appareils visibles</legend>
+            @if (deviceGroups.Count == 0) { <p class="hint">Aucun groupe d'appareils pour l'instant.</p> }
+            @foreach (var dg in deviceGroups)
+            {
+                <label class="check"><input type="checkbox" checked="@ug.Access.Contains(dg.Id)" @onchange="e => Toggle(ug.Access, dg.Id, (bool)e.Value!)" /><span>@dg.Name</span></label>
+            }
+        </fieldset>
+        <fieldset style="border:0;padding:0;margin:1rem 0 0">
+            <legend style="font-weight:550;font-size:.9rem;margin-bottom:.15rem">Permissions retirées pendant les sessions</legend>
+            <p class="hint" style="margin:0 0 .5rem">Imposées au poste contrôlé quand un membre se connecte, quels que soient les réglages du poste. Nécessite le hbbs DeskPilot et un client connecté à son compte. Sans effet pour les administrateurs.</p>
+            <div class="row" style="gap:0 1rem">
+                @foreach (var p in Permissions.All)
+                {
+                    <label class="check"><input type="checkbox" checked="@ug.Denied.Contains(p.Key)" @onchange="e => ToggleKey(ug.Denied, p.Key, (bool)e.Value!)" /><span>@p.Label</span></label>
+                }
+            </div>
+        </fieldset>
+    </ChildContent>
+    <Footer>
+        @if (ug.Id != 0) { <button class="btn danger" style="margin-right:auto" @onclick="DeleteUserGroupAsync">Supprimer</button> }
+        <button class="btn" @onclick="() => editingUg = false">Annuler</button>
+        <button class="btn primary" @onclick="SaveUserGroupAsync">Enregistrer</button>
+    </Footer>
+</Modal>
+
+<Modal @bind-Open="editingDg" Title="@(dgForm.Id == 0 ? "Nouveau groupe d'appareils" : "Groupe d'appareils")">
+    <ChildContent>
+        <label class="field"><span>Nom</span><input type="text" @bind="dgForm.Name" /></label>
+        <label class="field"><span>Note</span><input type="text" @bind="dgForm.Note" /></label>
+        <label class="field"><span>Stratégie</span>
+            <select @bind="dgForm.StrategyId">
+                <option value="0">Aucune</option>
+                @foreach (var s in strategies) { <option value="@s.Id">@s.Name</option> }
+            </select>
+            <small>Utilisée pour les appareils du groupe qui n'ont ni stratégie propre ni stratégie via leur propriétaire.</small>
+        </label>
+        <label class="field"><span>Serveur relais</span>
+            <input type="text" @bind="dgForm.Relay" placeholder="relais-lyon.exemple.fr:21117" />
+            <small>Relais utilisé pour se connecter aux appareils de ce groupe (un hbbr par site, par exemple). Vide : relais par défaut de hbbs.</small>
+        </label>
+    </ChildContent>
+    <Footer>
+        @if (dgForm.Id != 0) { <button class="btn danger" style="margin-right:auto" @onclick="DeleteDeviceGroupAsync">Supprimer</button> }
+        <button class="btn" @onclick="() => editingDg = false">Annuler</button>
+        <button class="btn primary" @onclick="SaveDeviceGroupAsync">Enregistrer</button>
+    </Footer>
+</Modal>
+
+@code {
+    private List<UserGroup> userGroups = [];
+    private List<DeviceGroup> deviceGroups = [];
+    private List<Strategy> strategies = [];
+    private bool editingUg, editingDg;
+    private UgForm ug = new();
+    private DgForm dgForm = new();
+
+    private class UgForm { public int Id; public string Name = "", Note = ""; public HashSet<int> Access = []; public HashSet<string> Denied = []; }
+    private class DgForm { public int Id, StrategyId; public string Name = "", Note = "", Relay = ""; }
+
+    private static void ToggleKey(HashSet<string> set, string key, bool on) { if (on) set.Add(key); else set.Remove(key); }
+
+    protected override async Task LoadAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        userGroups = await db.UserGroups.AsNoTracking().Include(g => g.Users)
+            .Include(g => g.DeviceGroupAccesses).ThenInclude(a => a.DeviceGroup).OrderBy(g => g.Name).ToListAsync();
+        deviceGroups = await db.DeviceGroups.AsNoTracking().Include(g => g.Devices).Include(g => g.Strategy).OrderBy(g => g.Name).ToListAsync();
+        strategies = await db.Strategies.AsNoTracking().OrderBy(s => s.Name).ToListAsync();
+    }
+
+    private static void Toggle(HashSet<int> set, int id, bool on) { if (on) set.Add(id); else set.Remove(id); }
+
+    private void NewUserGroup() { ug = new UgForm(); editingUg = true; }
+    private void EditUserGroup(UserGroup g)
+    {
+        ug = new UgForm { Id = g.Id, Name = g.Name, Note = g.Note ?? "", Access = g.DeviceGroupAccesses.Select(a => a.DeviceGroupId).ToHashSet(), Denied = g.DeniedPermissions.ToHashSet() };
+        editingUg = true;
+    }
+
+    private async Task SaveUserGroupAsync()
+    {
+        if (string.IsNullOrWhiteSpace(ug.Name)) { Notify.Error("Le nom est obligatoire."); return; }
+        var f = ug;
+        var ok = await SaveAsync(async db =>
+        {
+            var g = f.Id == 0 ? new UserGroup() : await db.UserGroups.Include(x => x.DeviceGroupAccesses).FirstAsync(x => x.Id == f.Id);
+            if (f.Id == 0) db.UserGroups.Add(g);
+            g.Name = f.Name.Trim();
+            g.Note = string.IsNullOrWhiteSpace(f.Note) ? null : f.Note.Trim();
+            g.DeniedPermissions = f.Denied.Order().ToList();
+            g.DeviceGroupAccesses.RemoveAll(a => !f.Access.Contains(a.DeviceGroupId));
+            foreach (var id in f.Access.Where(id => g.DeviceGroupAccesses.All(a => a.DeviceGroupId != id)))
+                g.DeviceGroupAccesses.Add(new DeviceGroupAccess { DeviceGroupId = id });
+        }, "Groupe enregistré.", "Groupe d'utilisateurs enregistré", f.Name);
+        if (ok) { editingUg = false; await LoadAsync(); }
+    }
+
+    private async Task DeleteUserGroupAsync()
+    {
+        var id = ug.Id;
+        var ok = await SaveAsync(async db => db.UserGroups.Remove(await db.UserGroups.FirstAsync(x => x.Id == id)),
+            "Groupe supprimé. Ses membres sont conservés, sans groupe.", "Groupe d'utilisateurs supprimé", ug.Name);
+        if (ok) { editingUg = false; await LoadAsync(); }
+    }
+
+    private void NewDeviceGroup() { dgForm = new DgForm(); editingDg = true; }
+    private void EditDeviceGroup(DeviceGroup g)
+    {
+        dgForm = new DgForm { Id = g.Id, Name = g.Name, Note = g.Note ?? "", StrategyId = g.StrategyId ?? 0, Relay = g.RelayServer ?? "" };
+        editingDg = true;
+    }
+
+    private async Task SaveDeviceGroupAsync()
+    {
+        if (string.IsNullOrWhiteSpace(dgForm.Name)) { Notify.Error("Le nom est obligatoire."); return; }
+        var f = dgForm;
+        var ok = await SaveAsync(async db =>
+        {
+            var g = f.Id == 0 ? new DeviceGroup() : await db.DeviceGroups.FirstAsync(x => x.Id == f.Id);
+            if (f.Id == 0) db.DeviceGroups.Add(g);
+            g.Name = f.Name.Trim();
+            g.Note = string.IsNullOrWhiteSpace(f.Note) ? null : f.Note.Trim();
+            g.StrategyId = f.StrategyId == 0 ? null : f.StrategyId;
+            g.RelayServer = string.IsNullOrWhiteSpace(f.Relay) ? null : f.Relay.Trim();
+        }, "Groupe enregistré.", "Groupe d'appareils enregistré", f.Name);
+        if (ok) { editingDg = false; await LoadAsync(); }
+    }
+
+    private async Task DeleteDeviceGroupAsync()
+    {
+        var id = dgForm.Id;
+        var ok = await SaveAsync(async db => db.DeviceGroups.Remove(await db.DeviceGroups.FirstAsync(x => x.Id == id)),
+            "Groupe supprimé. Ses appareils sont conservés, sans groupe.", "Groupe d'appareils supprimé", dgForm.Name);
+        if (ok) { editingDg = false; await LoadAsync(); }
+    }
+}

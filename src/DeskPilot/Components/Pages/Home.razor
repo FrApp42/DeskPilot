@@ -1,0 +1,135 @@
+@page "/"
+@attribute [Authorize(Policy = ConsoleAuth.AdminPolicy)]
+@rendermode InteractiveServer
+@inherits AdminPage
+@implements IDisposable
+
+<PageTitle>Tableau de bord · DeskPilot</PageTitle>
+<Toasts />
+
+<div class="page-head">
+    <div>
+        <h1>Tableau de bord</h1>
+        <p>État du parc, actualisé toutes les 15 secondes.</p>
+    </div>
+</div>
+
+<div class="tally">
+    <div class="is-live"><b>@online</b><span>appareils en ligne</span></div>
+    <div><b>@devices</b><span>appareils enregistrés</span></div>
+    <div class="is-live"><b>@activeSessions</b><span>sessions en cours</span></div>
+    <div><b>@users</b><span>utilisateurs</span></div>
+    <div><b>@alarms24h</b><span>alarmes sur 24 h</span></div>
+</div>
+
+<div class="grid-2">
+    <section class="panel">
+        <div class="panel-head"><h2>Sessions en cours</h2><a href="/audit">Tous les journaux</a></div>
+        @if (sessions.Count == 0)
+        {
+            <div class="empty">Aucune session à distance en ce moment.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Appareil</th><th>Depuis</th><th>Type</th><th class="num">Durée</th></tr></thead>
+                    <tbody>
+                        @foreach (var s in sessions)
+                        {
+                            <tr>
+                                <td><Rid Value="@s.RustdeskId" /><span class="sub">@Hostname(s.RustdeskId)</span></td>
+                                <td>@(s.PeerName ?? "—")<span class="sub">@s.PeerId @s.Ip</span></td>
+                                <td>@Fmt.ConnType(s.Type)</td>
+                                <td class="num">@Fmt.Duration(s.AuthedAt ?? s.CreatedAt, null)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <section class="panel">
+        <div class="panel-head"><h2>Dernières connexions</h2></div>
+        @if (recent.Count == 0)
+        {
+            <div class="empty">Aucune connexion enregistrée. Les journaux apparaissent dès qu'un client configuré avec ce serveur reçoit une connexion.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Appareil</th><th>Depuis</th><th>Début</th><th class="num">Durée</th></tr></thead>
+                    <tbody>
+                        @foreach (var s in recent)
+                        {
+                            <tr>
+                                <td><Rid Value="@s.RustdeskId" /></td>
+                                <td>@(s.PeerName ?? s.Ip ?? "—")</td>
+                                <td>@Fmt.Date(s.CreatedAt)</td>
+                                <td class="num">@(s.ClosedAt is null ? "en cours" : Fmt.Duration(s.CreatedAt, s.ClosedAt))</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+</div>
+
+@if (devices == 0)
+{
+    <section class="panel" style="margin-top:1.25rem">
+        <div class="panel-head"><h2>Connecter un premier client</h2></div>
+        <div class="panel-body">
+            <p>Dans RustDesk, ouvrez Paramètres › Réseau › Serveur d'ID/relais et renseignez :</p>
+            <ul>
+                <li>Serveur d'ID : l'adresse de votre hbbs</li>
+                <li>Serveur relais : l'adresse de votre hbbr</li>
+                <li>Serveur API : <code>@apiUrl</code></li>
+                <li>Clé : le contenu de <code>id_ed25519.pub</code> généré par hbbs</li>
+            </ul>
+            <p class="hint">L'appareil apparaît ici quelques secondes après l'enregistrement.</p>
+        </div>
+    </section>
+}
+
+@code {
+    [Inject] NavigationManager Nav { get; set; } = default!;
+    private int online, devices, activeSessions, users, alarms24h;
+    private List<ConnAudit> sessions = [], recent = [];
+    private Dictionary<string, string?> hostnames = [];
+    private string apiUrl = "";
+    private Timer? timer;
+
+    protected override async Task LoadAsync()
+    {
+        apiUrl = Nav.BaseUri.TrimEnd('/');
+        await RefreshAsync();
+        timer = new Timer(_ => InvokeAsync(async () => { await RefreshAsync(); StateHasChanged(); }), null, 15000, 15000);
+    }
+
+    private async Task RefreshAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var since = DateTime.UtcNow.AddSeconds(-45);
+        online = await db.Devices.CountAsync(d => d.LastSeenAt > since);
+        devices = await db.Devices.CountAsync();
+        users = await db.Users.CountAsync();
+        alarms24h = await db.AlarmAudits.CountAsync(a => a.CreatedAt > DateTime.UtcNow.AddDays(-1));
+        // A session is "live" when it is not closed and its device is still sending heartbeats.
+        var liveIds = await db.Devices.Where(d => d.LastSeenAt > since).Select(d => d.RustdeskId).ToListAsync();
+        sessions = await db.ConnAudits.AsNoTracking()
+            .Where(a => a.ClosedAt == null && a.AuthedAt != null && liveIds.Contains(a.RustdeskId) && a.CreatedAt > DateTime.UtcNow.AddDays(-2))
+            .OrderByDescending(a => a.Id).Take(20).ToListAsync();
+        activeSessions = sessions.Count;
+        recent = await db.ConnAudits.AsNoTracking().OrderByDescending(a => a.Id).Take(10).ToListAsync();
+        var ids = sessions.Select(s => s.RustdeskId).Distinct().ToList();
+        hostnames = await db.Devices.Where(d => ids.Contains(d.RustdeskId)).ToDictionaryAsync(d => d.RustdeskId, d => d.Hostname);
+    }
+
+    private string? Hostname(string id) => hostnames.GetValueOrDefault(id);
+
+    public void Dispose() => timer?.Dispose();
+}

@@ -1,0 +1,262 @@
+@page "/devices"
+@attribute [Authorize(Policy = ConsoleAuth.AdminPolicy)]
+@rendermode InteractiveServer
+@inherits AdminPage
+
+<PageTitle>Appareils · DeskPilot</PageTitle>
+<Toasts />
+
+<div class="page-head">
+    <div>
+        <h1>Appareils</h1>
+        <p>Machines qui ont envoyé leurs informations système à ce serveur. Le propriétaire, le groupe et la stratégie s'attribuent ici ou par les options preset du client.</p>
+    </div>
+</div>
+
+<section class="panel">
+    <div class="panel-head">
+        <div class="toolbar">
+            <input type="search" placeholder="ID, nom, utilisateur, OS…" @bind="search" @bind:event="oninput" @bind:after="Reload" aria-label="Rechercher" />
+            <select @bind="groupFilter" @bind:after="Reload" aria-label="Groupe">
+                <option value="0">Tous les groupes</option>
+                <option value="-1">Sans groupe</option>
+                @foreach (var g in groups) { <option value="@g.Id">@g.Name</option> }
+            </select>
+            <select @bind="stateFilter" @bind:after="Reload" aria-label="État">
+                <option value="">Tous les états</option>
+                <option value="on">En ligne</option>
+                <option value="off">Hors ligne</option>
+            </select>
+        </div>
+        <span class="hint">@total appareil(s)</span>
+    </div>
+
+    @if (rows.Count == 0)
+    {
+        <div class="empty">@(string.IsNullOrEmpty(search) && groupFilter == 0 && stateFilter == "" ? "Aucun appareil enregistré pour l'instant. Configurez le serveur API dans un client RustDesk pour le voir apparaître." : "Aucun appareil ne correspond à ces filtres.")</div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr><th>ID</th><th>État</th><th>Machine</th><th>Propriétaire</th><th>Groupe</th><th>Stratégie</th><th>Version</th><th></th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var d in rows)
+                    {
+                        <tr>
+                            <td><Rid Value="@d.RustdeskId" />@if (!string.IsNullOrEmpty(d.Note)) { <span class="sub">@d.Note</span> }</td>
+                            <td>
+                                @if (d.Blocked) { <span class="chip danger">Bloqué</span> }
+                                else if (requireDeploy && !d.Deployed) { <span class="chip warn">Non déployé</span> }
+                                else { <Presence Online="d.IsOnline" Busy="d.IsOnline && d.ActiveConns.Count > 0" LastSeen="d.LastSeenAt" /> }
+                            </td>
+                            <td>@(d.Hostname ?? "—")<span class="sub">@ShortOs(d.Os)@(string.IsNullOrEmpty(d.Username) ? "" : ", session " + d.Username)</span></td>
+                            <td>@(d.User?.DisplayNameOrName ?? "—")</td>
+                            <td>@(d.DeviceGroup?.Name ?? "—")</td>
+                            <td>@(d.Strategy?.Name ?? InheritedStrategy(d))</td>
+                            <td>@d.Version</td>
+                            <td class="act">
+                                @if (d.IsOnline && d.ActiveConns.Count > 0)
+                                {
+                                    <button class="btn link danger" @onclick="() => DisconnectAsync(d)">Couper la session</button>
+                                }
+                                <button class="btn link" @onclick="() => Edit(d)">Modifier</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <Pager Page="page" PageSize="pageSize" Total="total" PageChanged="GoPage" />
+    }
+</section>
+
+<Modal @bind-Open="editing" Title="@($"Appareil {current?.RustdeskId}")" Wide="true">
+    <ChildContent>
+        @if (current is not null)
+        {
+            <div class="row">
+                <label class="field"><span>Propriétaire</span>
+                    <select @bind="form.UserId">
+                        <option value="0">Aucun</option>
+                        @foreach (var u in users) { <option value="@u.Id">@u.DisplayNameOrName (@u.Name)</option> }
+                    </select>
+                    <small>Le propriétaire voit l'appareil dans l'onglet Groupes de son client.</small>
+                </label>
+                <label class="field"><span>Groupe d'appareils</span>
+                    <select @bind="form.GroupId">
+                        <option value="0">Aucun</option>
+                        @foreach (var g in groups) { <option value="@g.Id">@g.Name</option> }
+                    </select>
+                </label>
+                <label class="field"><span>Stratégie</span>
+                    <select @bind="form.StrategyId">
+                        <option value="0">Héritée (utilisateur puis groupe)</option>
+                        @foreach (var s in strategies) { <option value="@s.Id">@s.Name</option> }
+                    </select>
+                </label>
+            </div>
+            <label class="field"><span>Note</span><input type="text" @bind="form.Note" maxlength="300" /></label>
+            <label class="check"><input type="checkbox" @bind="form.Blocked" /><span>Bloquer l'appareil<small>hbbs refuse son enregistrement et toutes les connexions vers lui. Nécessite le hbbs DeskPilot.</small></span></label>
+            <label class="check"><input type="checkbox" @bind="form.Deployed" /><span>Déployé<small>Autorisé à s'enregistrer quand le déploiement est obligatoire (Paramètres › Accès).</small></span></label>
+
+            <h3 style="margin:1rem 0 .5rem">Informations système</h3>
+            <div class="table-wrap">
+                <table>
+                    <tbody>
+                        <tr><th>Nom de la machine</th><td>@current.Hostname</td></tr>
+                        <tr><th>Session utilisateur</th><td>@current.Username</td></tr>
+                        <tr><th>Système</th><td>@current.Os</td></tr>
+                        <tr><th>Processeur</th><td>@current.Cpu</td></tr>
+                        <tr><th>Mémoire</th><td>@current.Memory</td></tr>
+                        <tr><th>Version RustDesk</th><td>@current.Version</td></tr>
+                        <tr><th>Adresse IP</th><td>@current.Ip</td></tr>
+                        <tr><th>UUID</th><td><code>@current.Uuid</code></td></tr>
+                        <tr><th>Enregistré le</th><td>@Fmt.Date(current.CreatedAt)</td></tr>
+                        <tr><th>Dernier contact</th><td>@Fmt.Date(current.LastSeenAt)</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            @if (idHistory.Count > 0)
+            {
+                <h3 style="margin:1rem 0 .5rem">Changements d'ID</h3>
+                <div class="table-wrap">
+                    <table>
+                        <tbody>
+                            @foreach (var h in idHistory)
+                            {
+                                <tr><td><Rid Value="@h.OldId" /> → <Rid Value="@h.NewId" /></td><td>@Fmt.Date(h.CreatedAt)</td><td>@h.Ip</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn danger" style="margin-right:auto" @onclick="DeleteAsync">Supprimer l'appareil</button>
+        <button class="btn" @onclick="() => editing = false">Annuler</button>
+        <button class="btn primary" @onclick="SaveDeviceAsync">Enregistrer</button>
+    </Footer>
+</Modal>
+
+@code {
+    private string search = "", stateFilter = "";
+    private int groupFilter, page = 1, total;
+    private const int pageSize = 50;
+    private List<Device> rows = [];
+    private List<DeviceGroup> groups = [];
+    private List<User> users = [];
+    private List<Strategy> strategies = [];
+    private bool editing;
+    private Device? current;
+    private DeviceForm form = new();
+
+    private class DeviceForm { public int UserId, GroupId, StrategyId; public string? Note; public bool Blocked, Deployed; }
+    private bool requireDeploy;
+    private List<DeviceIdChange> idHistory = [];
+    [Inject] SettingsService Settings { get; set; } = default!;
+
+    protected override async Task LoadAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        groups = await db.DeviceGroups.AsNoTracking().OrderBy(g => g.Name).ToListAsync();
+        users = await db.Users.AsNoTracking().OrderBy(u => u.Name).ToListAsync();
+        strategies = await db.Strategies.AsNoTracking().OrderBy(s => s.Name).ToListAsync();
+        requireDeploy = await Settings.GetBoolAsync(SettingKeys.RequireKnownDevice);
+        await QueryAsync();
+    }
+
+    private async Task Reload() { page = 1; await QueryAsync(); }
+    private async Task GoPage(int p) { page = p; await QueryAsync(); }
+
+    private async Task QueryAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var q = db.Devices.AsNoTracking()
+            .Include(d => d.User).ThenInclude(u => u!.Strategy)
+            .Include(d => d.DeviceGroup).ThenInclude(g => g!.Strategy)
+            .Include(d => d.Strategy)
+            .AsQueryable();
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var s = $"%{search.Trim().Replace(" ", "")}%";
+            var t = $"%{search.Trim()}%";
+            q = q.Where(d => EF.Functions.ILike(d.RustdeskId, s) || EF.Functions.ILike(d.Hostname ?? "", t) ||
+                             EF.Functions.ILike(d.Username ?? "", t) || EF.Functions.ILike(d.Os ?? "", t) ||
+                             EF.Functions.ILike(d.Note ?? "", t) || EF.Functions.ILike(d.User!.Name, t));
+        }
+        if (groupFilter == -1) q = q.Where(d => d.DeviceGroupId == null);
+        else if (groupFilter > 0) q = q.Where(d => d.DeviceGroupId == groupFilter);
+        var since = DateTime.UtcNow.AddSeconds(-45);
+        if (stateFilter == "on") q = q.Where(d => d.LastSeenAt > since);
+        else if (stateFilter == "off") q = q.Where(d => d.LastSeenAt == null || d.LastSeenAt <= since);
+        total = await q.CountAsync();
+        rows = await q.OrderByDescending(d => d.LastSeenAt).ThenBy(d => d.RustdeskId)
+            .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+    }
+
+    private static string ShortOs(string? os) => os?.Split(" / ")[0] ?? "";
+
+    private static string InheritedStrategy(Device d)
+    {
+        var s = DeviceService.EffectiveStrategy(d);
+        return s is null ? "—" : $"{s.Name} (héritée)";
+    }
+
+    private async Task Edit(Device d)
+    {
+        current = d;
+        form = new DeviceForm { UserId = d.UserId ?? 0, GroupId = d.DeviceGroupId ?? 0, StrategyId = d.StrategyId ?? 0, Note = d.Note, Blocked = d.Blocked, Deployed = d.Deployed };
+        await using var db = await DbFactory.CreateDbContextAsync();
+        idHistory = await db.DeviceIdChanges.AsNoTracking().Where(h => h.DeviceId == d.Id).OrderByDescending(h => h.Id).ToListAsync();
+        editing = true;
+    }
+
+    private async Task SaveDeviceAsync()
+    {
+        if (current is null) return;
+        var id = current.Id;
+        var ok = await SaveAsync(async db =>
+        {
+            var d = await db.Devices.FindAsync(id) ?? throw new InvalidOperationException("Appareil introuvable");
+            d.UserId = form.UserId == 0 ? null : form.UserId;
+            d.DeviceGroupId = form.GroupId == 0 ? null : form.GroupId;
+            d.StrategyId = form.StrategyId == 0 ? null : form.StrategyId;
+            d.Note = string.IsNullOrWhiteSpace(form.Note) ? null : form.Note.Trim();
+            d.Blocked = form.Blocked;
+            d.Deployed = form.Deployed;
+        }, form.Blocked && !current.Blocked ? "Appareil bloqué : hbbs l'appliquera sous 10 secondes." : "Appareil enregistré.",
+           form.Blocked != current.Blocked ? (form.Blocked ? "Blocage d'appareil" : "Déblocage d'appareil") : "Modification d'appareil", current.RustdeskId);
+        if (ok) { editing = false; await QueryAsync(); }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (current is null) return;
+        var id = current.Id;
+        var rid = current.RustdeskId;
+        var ok = await SaveAsync(async db =>
+        {
+            db.Devices.Remove(await db.Devices.FindAsync(id) ?? throw new InvalidOperationException("Appareil introuvable"));
+            // Also free the ID on hbbs (DeskPilot fork).
+            db.IdReleases.Add(new IdRelease { RustdeskId = rid });
+        }, requireDeploy
+            ? "Appareil supprimé et ID libéré. Il devra être redéployé pour revenir."
+            : "Appareil supprimé et ID libéré. Il réapparaîtra s'il contacte de nouveau le serveur.", "Suppression d'appareil", rid);
+        if (ok) { editing = false; await QueryAsync(); }
+    }
+
+    private async Task DisconnectAsync(Device d)
+    {
+        var ok = await SaveAsync(db =>
+        {
+            foreach (var c in d.ActiveConns)
+                db.PendingDisconnects.Add(new PendingDisconnect { RustdeskId = d.RustdeskId, ConnId = c });
+            return Task.CompletedTask;
+        }, "Déconnexion demandée : elle sera appliquée au prochain contact de l'appareil (15 s max).", "Coupure de session", d.RustdeskId);
+        if (ok) await QueryAsync();
+    }
+}

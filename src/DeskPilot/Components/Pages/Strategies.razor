@@ -1,0 +1,172 @@
+@page "/strategies"
+@attribute [Authorize(Policy = ConsoleAuth.AdminPolicy)]
+@rendermode InteractiveServer
+@inherits AdminPage
+
+<PageTitle>Stratégies · DeskPilot</PageTitle>
+<Toasts />
+
+<div class="page-head">
+    <div>
+        <h1>Stratégies</h1>
+        <p>Une stratégie impose des options de configuration aux clients RustDesk. Elle s'applique à un appareil directement, sinon via son propriétaire, sinon via son groupe. Les clients la reçoivent au battement suivant (15 s).</p>
+    </div>
+    <div class="actions"><button class="btn primary" @onclick="New">Créer une stratégie</button></div>
+</div>
+
+<section class="panel">
+    @if (rows.Count == 0)
+    {
+        <div class="empty">Aucune stratégie. Exemple courant : désactiver le transfert de fichiers et imposer l'acceptation manuelle sur les postes d'un service.</div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Nom</th><th>Options</th><th class="num">Appareils</th><th class="num">Utilisateurs</th><th class="num">Groupes</th><th>Modifiée</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var s in rows)
+                    {
+                        <tr>
+                            <td><strong>@s.Name</strong>@if (!s.Enabled) { <span class="chip warn" style="margin-left:.4rem">Désactivée</span> }@if (!string.IsNullOrEmpty(s.Note)) { <span class="sub">@s.Note</span> }</td>
+                            <td>@foreach (var kv in s.Options.Take(4)) { <code style="display:block">@kv.Key = @kv.Value</code> }@if (s.Options.Count > 4) { <span class="sub">et @(s.Options.Count - 4) autre(s)</span> }</td>
+                            <td class="num">@usage.GetValueOrDefault(s.Id).Devices</td>
+                            <td class="num">@usage.GetValueOrDefault(s.Id).Users</td>
+                            <td class="num">@usage.GetValueOrDefault(s.Id).Groups</td>
+                            <td>@Fmt.Ago(DateTimeOffset.FromUnixTimeMilliseconds(s.ModifiedAt).UtcDateTime)</td>
+                            <td class="act"><button class="btn link" @onclick="() => Edit(s)">Modifier</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<Modal @bind-Open="editing" Title="@(form.Id == 0 ? "Nouvelle stratégie" : form.Name)" Wide="true">
+    <ChildContent>
+        <div class="row">
+            <label class="field"><span>Nom</span><input type="text" @bind="form.Name" /><small>Réutilisable dans preset-strategy-name et --strategy_name.</small></label>
+            <label class="field"><span>Note</span><input type="text" @bind="form.Note" /></label>
+        </div>
+        <label class="check"><input type="checkbox" @bind="form.Enabled" /><span>Active<small>Une stratégie désactivée n'est plus envoyée ; l'héritage passe au niveau suivant.</small></span></label>
+
+        <h3 style="margin:.5rem 0">Options imposées</h3>
+        <datalist id="option-keys">
+            @foreach (var k in KnownOptions) { <option value="@k.Key">@k.Value</option> }
+        </datalist>
+        @foreach (var item in form.Items)
+        {
+            <div class="kv">
+                <input type="text" list="option-keys" placeholder="Option, ex. enable-file-transfer" @bind="item.Key" aria-label="Option" />
+                <input type="text" placeholder="Valeur, ex. N" @bind="item.Value" aria-label="Valeur" />
+                <button class="btn small" @onclick="() => form.Items.Remove(item)" aria-label="Retirer">Retirer</button>
+            </div>
+            @if (KnownOptions.TryGetValue(item.Key.Trim(), out var help)) { <p class="hint" style="margin:-.2rem 0 .5rem">@help</p> }
+        }
+        <button class="btn small" @onclick="() => form.Items.Add(new Kv())">Ajouter une option</button>
+        <p class="hint">Valeurs booléennes : <code>Y</code> ou <code>N</code>. Une option retirée de la stratégie est effacée chez le client au battement suivant.</p>
+    </ChildContent>
+    <Footer>
+        @if (form.Id != 0) { <button class="btn danger" style="margin-right:auto" @onclick="DeleteAsync">Supprimer</button> }
+        <button class="btn" @onclick="() => editing = false">Annuler</button>
+        <button class="btn primary" @onclick="SaveStrategyAsync">Enregistrer</button>
+    </Footer>
+</Modal>
+
+@code {
+    private List<Strategy> rows = [];
+    private Dictionary<int, (int Devices, int Users, int Groups)> usage = [];
+    private bool editing;
+    private StrategyForm form = new();
+
+    private class Kv { public string Key = "", Value = ""; }
+    private class StrategyForm { public int Id; public string Name = "", Note = ""; public bool Enabled = true; public List<Kv> Items = []; }
+
+    private static readonly Dictionary<string, string> KnownOptions = new()
+    {
+        ["enable-keyboard"] = "Autoriser le clavier et la souris (Y/N)",
+        ["enable-clipboard"] = "Autoriser le presse-papiers (Y/N)",
+        ["enable-file-transfer"] = "Autoriser le transfert de fichiers (Y/N)",
+        ["enable-audio"] = "Autoriser l'audio (Y/N)",
+        ["enable-camera"] = "Autoriser la caméra (Y/N)",
+        ["enable-terminal"] = "Autoriser le terminal (Y/N)",
+        ["enable-tunnel"] = "Autoriser la redirection de port (Y/N)",
+        ["enable-remote-restart"] = "Autoriser le redémarrage à distance (Y/N)",
+        ["enable-record-session"] = "Autoriser l'enregistrement de session (Y/N)",
+        ["enable-block-input"] = "Autoriser le blocage des entrées locales (Y/N)",
+        ["enable-remote-printer"] = "Autoriser l'imprimante distante (Y/N)",
+        ["enable-privacy-mode"] = "Autoriser le mode confidentialité (Y/N)",
+        ["enable-lan-discovery"] = "Découverte sur le réseau local (Y/N)",
+        ["allow-remote-config-modification"] = "Autoriser la modification de la configuration à distance (Y/N)",
+        ["allow-auto-disconnect"] = "Déconnexion automatique après inactivité (Y/N)",
+        ["auto-disconnect-timeout"] = "Délai d'inactivité en minutes",
+        ["allow-auto-record-incoming"] = "Enregistrer automatiquement les sessions entrantes (Y/N)",
+        ["allow-only-conn-window-open"] = "N'accepter que si la fenêtre RustDesk est ouverte (Y/N)",
+        ["allow-remove-wallpaper"] = "Masquer le fond d'écran pendant la session (Y/N)",
+        ["allow-ask-for-note"] = "Demander une note en fin de session (Y/N)",
+        ["approve-mode"] = "Mode d'acceptation : password, click, ou vide pour les deux",
+        ["verification-method"] = "use-temporary-password, use-permanent-password ou use-both-passwords",
+        ["temporary-password-length"] = "Longueur du mot de passe temporaire : 6, 8 ou 10",
+        ["whitelist"] = "Liste blanche d'IP séparées par des virgules",
+        ["direct-server"] = "Accès IP direct (Y/N)",
+        ["direct-access-port"] = "Port de l'accès IP direct",
+        ["enable-check-update"] = "Vérifier les mises à jour (Y/N)",
+        ["allow-auto-update"] = "Mise à jour automatique (Y/N)",
+        ["enable-trusted-devices"] = "Appareils de confiance pour la 2FA (Y/N)",
+        ["stop-service"] = "Arrêter le service RustDesk (Y/N)",
+    };
+
+    protected override async Task LoadAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        rows = await db.Strategies.AsNoTracking().OrderBy(s => s.Name).ToListAsync();
+        var d = await db.Devices.Where(x => x.StrategyId != null).GroupBy(x => x.StrategyId!.Value).Select(g => new { g.Key, C = g.Count() }).ToListAsync();
+        var u = await db.Users.Where(x => x.StrategyId != null).GroupBy(x => x.StrategyId!.Value).Select(g => new { g.Key, C = g.Count() }).ToListAsync();
+        var g = await db.DeviceGroups.Where(x => x.StrategyId != null).GroupBy(x => x.StrategyId!.Value).Select(g => new { g.Key, C = g.Count() }).ToListAsync();
+        usage = rows.ToDictionary(s => s.Id, s => (
+            d.FirstOrDefault(x => x.Key == s.Id)?.C ?? 0,
+            u.FirstOrDefault(x => x.Key == s.Id)?.C ?? 0,
+            g.FirstOrDefault(x => x.Key == s.Id)?.C ?? 0));
+    }
+
+    private void New() { form = new StrategyForm { Items = [new Kv()] }; editing = true; }
+
+    private void Edit(Strategy s)
+    {
+        form = new StrategyForm
+        {
+            Id = s.Id, Name = s.Name, Note = s.Note ?? "", Enabled = s.Enabled,
+            Items = s.Options.Select(kv => new Kv { Key = kv.Key, Value = kv.Value }).ToList(),
+        };
+        editing = true;
+    }
+
+    private async Task SaveStrategyAsync()
+    {
+        if (string.IsNullOrWhiteSpace(form.Name)) { Notify.Error("Le nom est obligatoire."); return; }
+        var items = form.Items.Where(i => !string.IsNullOrWhiteSpace(i.Key)).ToList();
+        var dup = items.GroupBy(i => i.Key.Trim()).FirstOrDefault(g => g.Count() > 1);
+        if (dup is not null) { Notify.Error($"L'option {dup.Key} est présente deux fois."); return; }
+        var f = form;
+        var ok = await SaveAsync(async db =>
+        {
+            var s = f.Id == 0 ? new Strategy() : await db.Strategies.FirstAsync(x => x.Id == f.Id);
+            if (f.Id == 0) db.Strategies.Add(s);
+            s.Name = f.Name.Trim();
+            s.Note = string.IsNullOrWhiteSpace(f.Note) ? null : f.Note.Trim();
+            s.Enabled = f.Enabled;
+            s.Options = items.ToDictionary(i => i.Key.Trim(), i => i.Value.Trim());
+            s.ModifiedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }, "Stratégie enregistrée. Les clients concernés l'appliqueront sous 15 secondes.", "Stratégie enregistrée", f.Name);
+        if (ok) { editing = false; await LoadAsync(); }
+    }
+
+    private async Task DeleteAsync()
+    {
+        var id = form.Id;
+        var ok = await SaveAsync(async db => db.Strategies.Remove(await db.Strategies.FirstAsync(x => x.Id == id)),
+            "Stratégie supprimée. Ses options seront effacées chez les clients concernés.", "Stratégie supprimée", form.Name);
+        if (ok) { editing = false; await LoadAsync(); }
+    }
+}

@@ -1,0 +1,15 @@
+@page "/Error"
+@using System.Diagnostics
+
+<PageTitle>Erreur · DeskPilot</PageTitle>
+<div class="page-head"><div><h1>Une erreur est survenue</h1><p>La requête n'a pas pu aboutir. Les détails sont dans les journaux du serveur.</p></div></div>
+@if (!string.IsNullOrEmpty(RequestId))
+{
+    <p class="hint">Identifiant de requête : <code>@RequestId</code></p>
+}
+
+@code {
+    [CascadingParameter] private HttpContext? HttpContext { get; set; }
+    private string? RequestId { get; set; }
+    protected override void OnInitialized() => RequestId = Activity.Current?.Id ?? HttpContext?.TraceIdentifier;
+}

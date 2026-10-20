@@ -1,0 +1,11 @@
+@inject NavigationManager Nav
+
+<AuthorizeView>
+    <Authorized>
+        <div class="page-head"><div><h1>Accès réservé</h1><p>Cette page est réservée aux administrateurs. Vous pouvez gérer votre compte depuis « Mon compte ».</p></div></div>
+        <a class="btn" href="/account">Mon compte</a>
+    </Authorized>
+    <NotAuthorized>
+        @{ Nav.NavigateTo("/login?returnUrl=" + Uri.EscapeDataString("/" + Nav.ToBaseRelativePath(Nav.Uri)), forceLoad: true); }
+    </NotAuthorized>
+</AuthorizeView>

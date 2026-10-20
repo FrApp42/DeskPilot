@@ -1,0 +1,166 @@
+@page "/account"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inherits AdminPage
+
+<PageTitle>Mon compte · DeskPilot</PageTitle>
+<Toasts />
+
+<div class="page-head">
+    <div>
+        <h1>Mon compte</h1>
+        <p>@me?.DisplayNameOrName, connecté en tant que <strong>@me?.Name</strong>.</p>
+    </div>
+</div>
+
+@if (me is not null)
+{
+    <div class="grid-2">
+        <section class="panel">
+            <div class="panel-head"><h2>Mot de passe</h2></div>
+            <div class="panel-body">
+                @if (me.ThirdAuthType is not null)
+                {
+                    <p class="hint">Votre mot de passe est géré par @(me.ThirdAuthType == "ldap" ? "l'annuaire LDAP" : "votre fournisseur d'identité").</p>
+                }
+                else
+                {
+                    <label class="field"><span>Mot de passe actuel</span><input type="password" @bind="currentPwd" autocomplete="current-password" /></label>
+                    <label class="field"><span>Nouveau mot de passe</span><input type="password" @bind="newPwd" autocomplete="new-password" /><small>8 caractères minimum.</small></label>
+                    <label class="field"><span>Confirmation</span><input type="password" @bind="confirmPwd" autocomplete="new-password" /></label>
+                    <button class="btn primary" @onclick="ChangePasswordAsync">Changer le mot de passe</button>
+                }
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-head"><h2>Double authentification</h2>@if (me.TotpEnabled) { <span class="chip live">Activée</span> }</div>
+            <div class="panel-body">
+                @if (me.TotpEnabled)
+                {
+                    <p>Un code de votre application d'authentification est demandé à chaque connexion, dans la console et dans le client RustDesk.</p>
+                    <label class="field"><span>Code actuel, pour désactiver</span><input type="text" inputmode="numeric" @bind="totpCode" autocomplete="one-time-code" /></label>
+                    <button class="btn danger" @onclick="DisableTotpAsync">Désactiver</button>
+                }
+                else if (pendingSecret is null)
+                {
+                    <p>Protégez votre compte avec une application comme Aegis, FreeOTP, Google Authenticator ou Microsoft Authenticator.</p>
+                    <button class="btn primary" @onclick="StartTotp">Configurer</button>
+                }
+                else
+                {
+                    <p>Scannez ce code avec votre application, puis saisissez le code à 6 chiffres affiché.</p>
+                    <img src="@qrDataUri" alt="QR code de configuration" width="180" height="180" style="background:#fff;padding:8px;border-radius:6px" />
+                    <p class="hint">Saisie manuelle : <code class="secret">@pendingSecret</code></p>
+                    <label class="field"><span>Code de vérification</span><input type="text" inputmode="numeric" @bind="totpCode" autocomplete="one-time-code" /></label>
+                    <div class="actions">
+                        <button class="btn primary" @onclick="EnableTotpAsync">Activer</button>
+                        <button class="btn" @onclick="() => pendingSecret = null">Annuler</button>
+                    </div>
+                }
+            </div>
+        </section>
+    </div>
+
+    <section class="panel" style="margin-top:1.25rem">
+        <div class="panel-head"><h2>Clients RustDesk connectés à mon compte</h2></div>
+        @if (sessions.Count == 0)
+        {
+            <div class="empty">Aucun client connecté. Dans RustDesk, utilisez le bouton « Se connecter » de l'onglet Carnet d'adresses.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead><tr><th>Appareil</th><th>Système</th><th>Connecté</th><th>Dernière activité</th><th>Expire</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var t in sessions)
+                        {
+                            <tr>
+                                <td>@(t.DeviceName ?? "—")@if (t.ClientId is not null) { <span class="sub"><Rid Value="@t.ClientId" /></span> }</td>
+                                <td>@t.DeviceOs <span class="sub">@t.Ip</span></td>
+                                <td>@Fmt.Date(t.CreatedAt)</td>
+                                <td>@Fmt.Ago(t.LastUsedAt)</td>
+                                <td>@Fmt.Date(t.ExpiresAt)</td>
+                                <td class="act"><button class="btn link danger" @onclick="() => RevokeAsync(t)">Déconnecter</button></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private User? me;
+    private List<AccessToken> sessions = [];
+    private string currentPwd = "", newPwd = "", confirmPwd = "", totpCode = "";
+    private string? pendingSecret, qrDataUri;
+
+    protected override async Task LoadAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        me = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == MyId);
+        sessions = await db.AccessTokens.AsNoTracking().Where(t => t.UserId == MyId && t.ExpiresAt > DateTime.UtcNow)
+            .OrderByDescending(t => t.LastUsedAt).ToListAsync();
+    }
+
+    private async Task ChangePasswordAsync()
+    {
+        if (me is null) return;
+        if (!AuthService.VerifyPassword(me, currentPwd)) { Notify.Error("Le mot de passe actuel est incorrect."); return; }
+        if (newPwd.Length < 8) { Notify.Error("Le nouveau mot de passe doit contenir au moins 8 caractères."); return; }
+        if (newPwd != confirmPwd) { Notify.Error("La confirmation ne correspond pas."); return; }
+        var pwd = newPwd;
+        var ok = await SaveAsync(async db =>
+        {
+            var u = await db.Users.FirstAsync(x => x.Id == me.Id);
+            u.PasswordHash = AuthService.HashPassword(u, pwd);
+        }, "Mot de passe changé.", "Changement de mot de passe", me.Name);
+        if (ok) { currentPwd = newPwd = confirmPwd = ""; await LoadAsync(); }
+    }
+
+    private void StartTotp()
+    {
+        pendingSecret = AuthService.NewTotpSecret();
+        totpCode = "";
+        var uri = $"otpauth://totp/DeskPilot:{Uri.EscapeDataString(me!.Name)}?secret={pendingSecret}&issuer=DeskPilot";
+        using var gen = new QRCoder.QRCodeGenerator();
+        using var data = gen.CreateQrCode(uri, QRCoder.QRCodeGenerator.ECCLevel.M);
+        var png = new QRCoder.PngByteQRCode(data).GetGraphic(6);
+        qrDataUri = "data:image/png;base64," + Convert.ToBase64String(png);
+    }
+
+    private async Task EnableTotpAsync()
+    {
+        if (!AuthService.VerifyTotp(pendingSecret, totpCode)) { Notify.Error("Code incorrect. Vérifiez l'heure de votre téléphone."); return; }
+        var secret = pendingSecret;
+        var ok = await SaveAsync(async db =>
+        {
+            var u = await db.Users.FirstAsync(x => x.Id == me!.Id);
+            u.TotpSecret = secret;
+            u.TotpEnabled = true;
+        }, "Double authentification activée.", "2FA activée", me!.Name);
+        if (ok) { pendingSecret = null; totpCode = ""; await LoadAsync(); }
+    }
+
+    private async Task DisableTotpAsync()
+    {
+        if (!AuthService.VerifyTotp(me!.TotpSecret, totpCode)) { Notify.Error("Code incorrect."); return; }
+        var ok = await SaveAsync(async db =>
+        {
+            var u = await db.Users.FirstAsync(x => x.Id == me.Id);
+            u.TotpSecret = null;
+            u.TotpEnabled = false;
+        }, "Double authentification désactivée.", "2FA désactivée", me.Name);
+        if (ok) { totpCode = ""; await LoadAsync(); }
+    }
+
+    private async Task RevokeAsync(AccessToken t)
+    {
+        var ok = await SaveAsync(async db => await db.AccessTokens.Where(x => x.Id == t.Id && x.UserId == MyId).ExecuteDeleteAsync(),
+            "Client déconnecté.", "Révocation de session client", t.DeviceName);
+        if (ok) await LoadAsync();
+    }
+}

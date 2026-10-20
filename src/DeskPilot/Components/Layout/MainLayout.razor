@@ -1,0 +1,54 @@
+@inherits LayoutComponentBase
+
+<input type="checkbox" id="menu-toggle" hidden />
+<div class="shell">
+    <aside class="side" aria-label="Navigation">
+        <a class="brand" href="/">
+            <BrandMark /> DeskPilot
+        </a>
+        <AuthorizeView Policy="@ConsoleAuth.AdminPolicy">
+            <Authorized>
+                <nav class="nav">
+                    <NavLink href="/" Match="NavLinkMatch.All">Tableau de bord</NavLink>
+                    <NavLink href="/devices">Appareils</NavLink>
+                    <NavLink href="/address-books">Carnets d'adresses</NavLink>
+                    <NavLink href="/audit">Journaux</NavLink>
+                    <NavLink href="/recordings">Enregistrements</NavLink>
+                    <div class="nav-sep"></div>
+                    <NavLink href="/users">Utilisateurs</NavLink>
+                    <NavLink href="/groups">Groupes</NavLink>
+                    <NavLink href="/strategies">Stratégies</NavLink>
+                    <NavLink href="/settings">Paramètres</NavLink>
+                </nav>
+            </Authorized>
+        </AuthorizeView>
+        <AuthorizeView>
+            <Authorized>
+                <nav class="nav">
+                    <NavLink href="/account">Mon compte</NavLink>
+                </nav>
+                <div class="side-foot">
+                    <span class="who">@context.User.FindFirst("display_name")?.Value</span>
+                    <form method="post" action="/account/logout">
+                        <AntiforgeryToken />
+                        <button type="submit">Se déconnecter</button>
+                    </form>
+                </div>
+            </Authorized>
+        </AuthorizeView>
+    </aside>
+    <div>
+        <div class="topbar">
+            <label for="menu-toggle" class="btn small" style="background:none;color:#fff;border-color:rgba(255,255,255,.3)">Menu</label>
+            <span>DeskPilot</span>
+        </div>
+        <main class="main">
+            @Body
+        </main>
+    </div>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    Une erreur est survenue. <a href="." class="reload">Recharger</a>
+    <span class="dismiss">✕</span>
+</div>

@@ -1,0 +1,13 @@
+# Test client for the DeskPilot hbbs fork. It speaks to hbbs with the networking code of the
+# current RustDesk client (rustdesk/hbb_common), including its key exchange, so that the
+# fork is checked against the real client implementation rather than against itself.
+[package]
+name = "hbbs-compat"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+hbb_common = { git = "https://github.com/rustdesk/hbb_common", rev = "5d52530b636fb296a324260b074780cf559e0093" }
+
+[workspace]

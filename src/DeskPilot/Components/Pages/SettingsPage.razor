@@ -1,0 +1,429 @@
+@page "/settings"
+@attribute [Authorize(Policy = ConsoleAuth.AdminPolicy)]
+@rendermode InteractiveServer
+@inherits AdminPage
+@inject SettingsService Settings
+@inject LdapService Ldap
+@inject NavigationManager Nav
+@inject DeskPilot.Api.HbbsStatus Hbbs
+
+<PageTitle>Paramètres · DeskPilot</PageTitle>
+<Toasts />
+
+<div class="page-head">
+    <div><h1>Paramètres</h1></div>
+</div>
+
+<div class="tabs" role="tablist">
+    @foreach (var (key, label) in Tabs)
+    {
+        <button role="tab" class="@(tab == key ? "on" : "")" aria-selected="@(tab == key)" @onclick="() => tab = key">@label</button>
+    }
+</div>
+
+@if (tab == "general")
+{
+    <section class="panel">
+        <div class="panel-body" style="max-width:720px">
+            <label class="field"><span>URL publique de la console</span>
+                <input type="url" @bind="g.PublicUrl" placeholder="@Nav.BaseUri.TrimEnd('/')" />
+                <small>Adresse joignable par les navigateurs, utilisée pour les retours OIDC. Laisser vide pour la déduire de la requête.</small>
+            </label>
+            <div class="row">
+                <label class="field"><span>Machines par carnet d'adresses</span>
+                    <input type="number" min="0" @bind="g.MaxPeers" /><small>0 = illimité.</small>
+                </label>
+                <label class="field"><span>Durée de session client (jours)</span>
+                    <input type="number" min="1" max="365" @bind="g.TokenDays" /><small>Après ce délai, le client RustDesk redemande la connexion.</small>
+                </label>
+            </div>
+            <label class="check"><input type="checkbox" @bind="g.Records" /><span>Accepter le téléversement des enregistrements de session</span></label>
+            <button class="btn primary" @onclick="SaveGeneralAsync">Enregistrer</button>
+        </div>
+    </section>
+}
+else if (tab == "access")
+{
+    <section class="panel">
+        <div class="panel-head">
+            <h2>Serveur hbbs</h2>
+            @if (Hbbs.Connected) { <span class="chip live">Connecté</span> } else { <span class="chip warn">Non connecté</span> }
+        </div>
+        <div class="panel-body" style="max-width:720px">
+            @if (Hbbs.Connected)
+            {
+                <p>Le hbbs DeskPilot s'est synchronisé @Fmt.Ago(Hbbs.LastSyncAt!.Value), @Hbbs.Online appareil(s) enregistré(s).</p>
+            }
+            else
+            {
+                <p>Les réglages ci-dessous sont appliqués par le hbbs DeskPilot. Lancez-le avec <code>DESKPILOT_URL</code> pointant vers cette console et <code>DESKPILOT_SECRET</code> identique à la variable <code>DeskPilot__HbbsSecret</code> de DeskPilot. @(Hbbs.LastSyncAt is null ? "Aucune synchronisation reçue depuis le démarrage." : $"Dernière synchronisation {Fmt.Ago(Hbbs.LastSyncAt.Value)}.")</p>
+            }
+        </div>
+    </section>
+    <section class="panel">
+        <div class="panel-head"><h2>Contrôle d'accès</h2></div>
+        <div class="panel-body" style="max-width:720px">
+            <fieldset style="border:0;padding:0;margin:0 0 1rem">
+                <legend class="sr-only">Mode</legend>
+                <label class="check"><input type="radio" name="access" checked="@(a.Mode == "off")" @onchange="@(() => a.Mode = "off")" /><span>Ouvert<small>Toute personne qui connaît l'ID et le mot de passe d'un appareil peut s'y connecter, comme avec le hbbs libre.</small></span></label>
+                <label class="check"><input type="radio" name="access" checked="@(a.Mode == "login")" @onchange="@(() => a.Mode = "login")" /><span>Compte obligatoire<small>Le client doit être connecté à un compte DeskPilot actif pour joindre un appareil.</small></span></label>
+                <label class="check"><input type="radio" name="access" checked="@(a.Mode == "groups")" @onchange="@(() => a.Mode = "groups")" /><span>Compte et groupes<small>Un utilisateur ne joint que ses appareils, ceux de son groupe et ceux des groupes d'appareils ouverts à son groupe. Les administrateurs joignent tout.</small></span></label>
+            </fieldset>
+            <p class="hint">Le mot de passe de l'appareil reste demandé dans tous les cas. Les connexions directes par IP et sur le réseau local ne passent pas par hbbs et ne sont pas contrôlées.</p>
+            <label class="check"><input type="checkbox" @bind="a.AllowIdChange" /><span>Autoriser les utilisateurs à changer l'ID de leur appareil<small>Le changement est fait depuis le client ; l'historique est visible dans la fiche de l'appareil.</small></span></label>
+            <label class="check"><input type="checkbox" @bind="a.RequireDeploy" /><span>Déploiement obligatoire<small>hbbs refuse les appareils qui n'ont pas été déployés avec <code>rustdesk --deploy --token …</code> (ou marqués « Déployé » dans leur fiche). @(requireDeployWasOff ? "À l'activation, les appareils déjà connus sont marqués comme déployés." : "")</small></span></label>
+            <button class="btn primary" @onclick="SaveAccessAsync">Enregistrer</button>
+        </div>
+    </section>
+}
+else if (tab == "ldap")
+{
+    <section class="panel">
+        <div class="panel-body" style="max-width:720px">
+            <label class="check"><input type="checkbox" @bind="l.Enabled" /><span>Activer l'authentification LDAP / Active Directory<small>Les comptes locaux restent utilisables. Un compte LDAP est créé à sa première connexion.</small></span></label>
+            <div class="row">
+                <label class="field"><span>Hôte</span><input type="text" @bind="l.Host" placeholder="ldap.exemple.local" /></label>
+                <label class="field"><span>Port</span><input type="number" @bind="l.Port" placeholder="389 ou 636" /></label>
+            </div>
+            <label class="check"><input type="checkbox" @bind="l.Ssl" /><span>LDAPS (TLS dès la connexion)</span></label>
+            <label class="check"><input type="checkbox" @bind="l.StartTls" /><span>StartTLS</span></label>
+            <div class="row">
+                <label class="field"><span>DN de liaison</span><input type="text" @bind="l.BindDn" placeholder="cn=svc-rustdesk,ou=services,dc=exemple,dc=local" /></label>
+                <label class="field"><span>Mot de passe de liaison</span><input type="password" @bind="l.BindPassword" autocomplete="new-password" placeholder="@(l.HasPassword ? "Inchangé" : "")" /></label>
+            </div>
+            <label class="field"><span>Base de recherche</span><input type="text" @bind="l.BaseDn" placeholder="ou=users,dc=exemple,dc=local" /></label>
+            <label class="field"><span>Filtre utilisateur</span><input type="text" @bind="l.Filter" />
+                <small><code>{0}</code> est remplacé par l'identifiant saisi. Active Directory : <code>(&amp;(objectClass=user)(sAMAccountName={0}))</code></small>
+            </label>
+            <div class="row">
+                <label class="field"><span>Attribut identifiant</span><input type="text" @bind="l.AttrUser" placeholder="uid ou sAMAccountName" /></label>
+                <label class="field"><span>Attribut e-mail</span><input type="text" @bind="l.AttrMail" /></label>
+                <label class="field"><span>Attribut nom affiché</span><input type="text" @bind="l.AttrName" /></label>
+            </div>
+            <label class="field"><span>Groupe des administrateurs (DN)</span><input type="text" @bind="l.AdminGroup" placeholder="cn=rustdesk-admins,ou=groups,dc=exemple,dc=local" />
+                <small>Si renseigné, le rôle administrateur suit l'appartenance à ce groupe (attribut memberOf) à chaque connexion.</small>
+            </label>
+            <label class="check"><input type="checkbox" @bind="l.AutoRegister" /><span>Créer automatiquement les comptes à la première connexion</span></label>
+            <div class="actions">
+                <button class="btn primary" @onclick="SaveLdapAsync">Enregistrer</button>
+                <button class="btn" @onclick="TestLdapAsync">Tester la connexion</button>
+            </div>
+            @if (ldapTest is not null) { <div class="notice @(ldapTest.StartsWith("OK") ? "ok" : "err")" style="margin-top:1rem">@ldapTest</div> }
+        </div>
+    </section>
+}
+else if (tab == "oidc")
+{
+    <section class="panel">
+        <div class="panel-head">
+            <span class="hint">URL de redirection à déclarer chez le fournisseur : <code>@callbackUrl</code></span>
+            <button class="btn small" @onclick="NewProvider">Ajouter un fournisseur</button>
+        </div>
+        @if (providers.Count == 0)
+        {
+            <div class="empty">Aucun fournisseur. Keycloak, Authentik, Entra ID, Google ou tout fournisseur OpenID Connect peuvent être ajoutés ; un bouton apparaît alors dans le client et sur la page de connexion.</div>
+        }
+        else
+        {
+            <table>
+                <thead><tr><th>Nom</th><th>Émetteur</th><th>Inscription auto.</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var p in providers)
+                    {
+                        <tr>
+                            <td><strong>@p.Name</strong>@if (!p.Enabled) { <span class="chip warn" style="margin-left:.4rem">Désactivé</span> }</td>
+                            <td><code>@p.Issuer</code></td>
+                            <td>@(p.AutoRegister ? "Oui" : "Non")</td>
+                            <td class="act"><button class="btn link" @onclick="() => EditProvider(p)">Modifier</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+}
+else
+{
+    <section class="panel">
+        <div class="panel-head">
+            <span class="hint">Pour <code>rustdesk --assign --token …</code> et <code>rustdesk --deploy --token …</code> exécutés sur les postes.</span>
+            <button class="btn small" @onclick="OpenTokenModal">Créer un jeton</button>
+        </div>
+        @if (newToken is not null)
+        {
+            <div class="panel-body">
+                <div class="notice ok">Jeton créé. Copiez-le maintenant : il ne sera plus affiché.<code class="secret">@newToken</code></div>
+            </div>
+        }
+        @if (apiTokens.Count == 0)
+        {
+            <div class="empty">Aucun jeton d'API.</div>
+        }
+        else
+        {
+            <table>
+                <thead><tr><th>Nom</th><th>Préfixe</th><th>Créé par</th><th>Expire</th><th>Dernière utilisation</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var t in apiTokens)
+                    {
+                        <tr>
+                            <td>@t.Name</td><td><code>@t.Prefix…</code></td><td>@t.User?.Name</td>
+                            <td>@(t.ExpiresAt is null ? "Jamais" : Fmt.Date(t.ExpiresAt))</td>
+                            <td>@(t.LastUsedAt is null ? "Jamais" : Fmt.Ago(t.LastUsedAt.Value))</td>
+                            <td class="act"><button class="btn link danger" @onclick="() => RevokeTokenAsync(t)">Révoquer</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+}
+
+<Modal @bind-Open="editingProvider" Title="@(p.Id == 0 ? "Nouveau fournisseur OIDC" : p.Name)">
+    <ChildContent>
+        <label class="field"><span>Nom affiché</span><input type="text" @bind="p.Name" placeholder="Keycloak" /><small>Libellé du bouton « Continuer avec … ».</small></label>
+        <label class="field"><span>Émetteur (issuer)</span><input type="url" @bind="p.Issuer" placeholder="https://sso.exemple.fr/realms/it" />
+            <small>L'adresse doit exposer /.well-known/openid-configuration.</small></label>
+        <div class="row">
+            <label class="field"><span>Client ID</span><input type="text" @bind="p.ClientId" /></label>
+            <label class="field"><span>Secret client</span><input type="password" @bind="p.ClientSecret" autocomplete="new-password" placeholder="@(p.Id != 0 ? "Inchangé" : "")" /></label>
+        </div>
+        <div class="row">
+            <label class="field"><span>Scopes</span><input type="text" @bind="p.Scopes" /></label>
+            <label class="field"><span>Claim du nom d'utilisateur</span><input type="text" @bind="p.UsernameClaim" /></label>
+        </div>
+        <label class="check"><input type="checkbox" @bind="p.AutoRegister" /><span>Créer automatiquement les comptes<small>Sinon, seuls les comptes existants avec la même adresse e-mail vérifiée peuvent se connecter.</small></span></label>
+        <label class="check"><input type="checkbox" @bind="p.Enabled" /><span>Actif</span></label>
+    </ChildContent>
+    <Footer>
+        @if (p.Id != 0) { <button class="btn danger" style="margin-right:auto" @onclick="DeleteProviderAsync">Supprimer</button> }
+        <button class="btn" @onclick="() => editingProvider = false">Annuler</button>
+        <button class="btn primary" @onclick="SaveProviderAsync">Enregistrer</button>
+    </Footer>
+</Modal>
+
+<Modal @bind-Open="creatingToken" Title="Nouveau jeton d'API">
+    <ChildContent>
+        <label class="field"><span>Nom</span><input type="text" @bind="tokenName" placeholder="Déploiement GPO" /></label>
+        <label class="field"><span>Validité</span>
+            <select @bind="tokenDays">
+                <option value="30">30 jours</option>
+                <option value="90">90 jours</option>
+                <option value="365">1 an</option>
+                <option value="0">Sans expiration</option>
+            </select>
+        </label>
+        <p class="hint">Le jeton agit avec vos droits d'administrateur.</p>
+    </ChildContent>
+    <Footer>
+        <button class="btn" @onclick="() => creatingToken = false">Annuler</button>
+        <button class="btn primary" @onclick="CreateTokenAsync">Créer le jeton</button>
+    </Footer>
+</Modal>
+
+@code {
+    private static readonly (string, string)[] Tabs = [("general", "Général"), ("access", "Accès et hbbs"), ("ldap", "LDAP"), ("oidc", "OIDC"), ("tokens", "Jetons d'API")];
+    private string tab = "general";
+    private GeneralForm g = new();
+    private LdapForm l = new();
+    private string? ldapTest;
+    private List<OidcProvider> providers = [];
+    private bool editingProvider;
+    private OidcProvider p = new();
+    private List<ApiToken> apiTokens = [];
+    private bool creatingToken;
+    private string tokenName = "";
+    private int tokenDays = 90;
+    private string? newToken;
+    private string callbackUrl = "";
+
+    private void OpenTokenModal() { tokenName = ""; creatingToken = true; newToken = null; }
+
+    private class GeneralForm { public string PublicUrl = ""; public int MaxPeers; public int TokenDays = 30; public bool Records; }
+    private class AccessForm { public string Mode = "off"; public bool AllowIdChange = true, RequireDeploy; }
+    private AccessForm a = new();
+    private bool requireDeployWasOff;
+    private class LdapForm
+    {
+        public bool Enabled, Ssl, StartTls, AutoRegister = true, HasPassword;
+        public string Host = "", Port = "", BindDn = "", BindPassword = "", BaseDn = "", Filter = "", AttrUser = "", AttrMail = "", AttrName = "", AdminGroup = "";
+    }
+
+    protected override async Task LoadAsync()
+    {
+        g = new GeneralForm
+        {
+            PublicUrl = await Settings.GetAsync(SettingKeys.PublicUrl),
+            MaxPeers = await Settings.GetIntAsync(SettingKeys.MaxPeersPerAb, 0),
+            TokenDays = await Settings.GetIntAsync(SettingKeys.AccessTokenDays, 30),
+            Records = await Settings.GetBoolAsync(SettingKeys.AllowRecordUpload),
+        };
+        a = new AccessForm
+        {
+            Mode = await Settings.GetAsync(SettingKeys.AccessMode, "off"),
+            AllowIdChange = await Settings.GetBoolAsync(SettingKeys.AllowIdChange, true),
+            RequireDeploy = await Settings.GetBoolAsync(SettingKeys.RequireKnownDevice),
+        };
+        requireDeployWasOff = !a.RequireDeploy;
+        l = new LdapForm
+        {
+            Enabled = await Settings.GetBoolAsync(SettingKeys.LdapEnabled),
+            Host = await Settings.GetAsync(SettingKeys.LdapHost),
+            Port = await Settings.GetAsync(SettingKeys.LdapPort),
+            Ssl = await Settings.GetBoolAsync(SettingKeys.LdapUseSsl),
+            StartTls = await Settings.GetBoolAsync(SettingKeys.LdapStartTls),
+            BindDn = await Settings.GetAsync(SettingKeys.LdapBindDn),
+            HasPassword = (await Settings.GetAsync(SettingKeys.LdapBindPassword)).Length > 0,
+            BaseDn = await Settings.GetAsync(SettingKeys.LdapBaseDn),
+            Filter = await Settings.GetAsync(SettingKeys.LdapUserFilter, "(&(objectClass=person)(uid={0}))"),
+            AttrUser = await Settings.GetAsync(SettingKeys.LdapUsernameAttr, "uid"),
+            AttrMail = await Settings.GetAsync(SettingKeys.LdapEmailAttr, "mail"),
+            AttrName = await Settings.GetAsync(SettingKeys.LdapDisplayNameAttr, "cn"),
+            AdminGroup = await Settings.GetAsync(SettingKeys.LdapAdminGroupDn),
+            AutoRegister = await Settings.GetBoolAsync(SettingKeys.LdapAutoRegister, true),
+        };
+        callbackUrl = (g.PublicUrl.Length > 0 ? g.PublicUrl.TrimEnd('/') : Nav.BaseUri.TrimEnd('/')) + "/oidc/callback";
+        await LoadListsAsync();
+    }
+
+    private async Task LoadListsAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        providers = await db.OidcProviders.AsNoTracking().OrderBy(x => x.Name).ToListAsync();
+        apiTokens = await db.ApiTokens.AsNoTracking().Include(t => t.User).OrderByDescending(t => t.Id).ToListAsync();
+    }
+
+    private static string B(bool v) => v ? "true" : "false";
+
+    private async Task SaveGeneralAsync()
+    {
+        if (g.PublicUrl.Length > 0 && !Uri.TryCreate(g.PublicUrl, UriKind.Absolute, out _)) { Notify.Error("L'URL publique n'est pas valide."); return; }
+        await Settings.SetAsync(new Dictionary<string, string?>
+        {
+            [SettingKeys.PublicUrl] = g.PublicUrl.Trim().TrimEnd('/'),
+            [SettingKeys.MaxPeersPerAb] = Math.Max(0, g.MaxPeers).ToString(),
+            [SettingKeys.AccessTokenDays] = Math.Clamp(g.TokenDays, 1, 365).ToString(),
+            [SettingKeys.AllowRecordUpload] = B(g.Records),
+        });
+        await using var db = await DbFactory.CreateDbContextAsync();
+        await LogAsync(db, "Paramètres généraux modifiés");
+        Notify.Ok("Paramètres enregistrés.");
+    }
+
+    private async Task SaveAccessAsync()
+    {
+        if (a.Mode is not ("off" or "login" or "groups")) a.Mode = "off";
+        await using var db = await DbFactory.CreateDbContextAsync();
+        if (a.RequireDeploy && requireDeployWasOff)
+        {
+            // Turning it on must not lock out the fleet that is already registered.
+            var n = await db.Devices.Where(d => !d.Deployed).ExecuteUpdateAsync(x => x.SetProperty(d => d.Deployed, true));
+            if (n > 0) Notify.Ok($"{n} appareil(s) existant(s) marqué(s) comme déployé(s).");
+        }
+        await Settings.SetAsync(new Dictionary<string, string?>
+        {
+            [SettingKeys.AccessMode] = a.Mode,
+            [SettingKeys.AllowIdChange] = B(a.AllowIdChange),
+            [SettingKeys.RequireKnownDevice] = B(a.RequireDeploy),
+        });
+        requireDeployWasOff = !a.RequireDeploy;
+        await LogAsync(db, "Contrôle d'accès modifié", a.Mode);
+        Notify.Ok("Réglages d'accès enregistrés. hbbs les applique sous 10 secondes.");
+    }
+
+    private async Task SaveLdapAsync()
+    {
+        var values = new Dictionary<string, string?>
+        {
+            [SettingKeys.LdapEnabled] = B(l.Enabled),
+            [SettingKeys.LdapHost] = l.Host.Trim(),
+            [SettingKeys.LdapPort] = l.Port.Trim(),
+            [SettingKeys.LdapUseSsl] = B(l.Ssl),
+            [SettingKeys.LdapStartTls] = B(l.StartTls),
+            [SettingKeys.LdapBindDn] = l.BindDn.Trim(),
+            [SettingKeys.LdapBaseDn] = l.BaseDn.Trim(),
+            [SettingKeys.LdapUserFilter] = l.Filter.Trim(),
+            [SettingKeys.LdapUsernameAttr] = l.AttrUser.Trim(),
+            [SettingKeys.LdapEmailAttr] = l.AttrMail.Trim(),
+            [SettingKeys.LdapDisplayNameAttr] = l.AttrName.Trim(),
+            [SettingKeys.LdapAdminGroupDn] = l.AdminGroup.Trim(),
+            [SettingKeys.LdapAutoRegister] = B(l.AutoRegister),
+        };
+        if (l.BindPassword.Length > 0) values[SettingKeys.LdapBindPassword] = l.BindPassword;
+        if (l.Filter.Length > 0 && !l.Filter.Contains("{0}")) { Notify.Error("Le filtre doit contenir {0}."); return; }
+        await Settings.SetAsync(values);
+        l.HasPassword |= l.BindPassword.Length > 0;
+        l.BindPassword = "";
+        await using var db = await DbFactory.CreateDbContextAsync();
+        await LogAsync(db, "Paramètres LDAP modifiés");
+        Notify.Ok("Paramètres LDAP enregistrés.");
+    }
+
+    private async Task TestLdapAsync()
+    {
+        ldapTest = "Test en cours…";
+        ldapTest = await Ldap.TestAsync();
+    }
+
+    private void NewProvider() { p = new OidcProvider(); editingProvider = true; }
+    private void EditProvider(OidcProvider x)
+    {
+        p = new OidcProvider { Id = x.Id, Name = x.Name, Issuer = x.Issuer, ClientId = x.ClientId, Scopes = x.Scopes, AutoRegister = x.AutoRegister, Enabled = x.Enabled, UsernameClaim = x.UsernameClaim };
+        editingProvider = true;
+    }
+
+    private async Task SaveProviderAsync()
+    {
+        if (string.IsNullOrWhiteSpace(p.Name) || p.Name.Contains('/')) { Notify.Error("Le nom est obligatoire et ne peut pas contenir « / »."); return; }
+        if (!Uri.TryCreate(p.Issuer, UriKind.Absolute, out _) || string.IsNullOrWhiteSpace(p.ClientId)) { Notify.Error("L'émetteur et le client ID sont obligatoires."); return; }
+        var f = p;
+        var ok = await SaveAsync(async db =>
+        {
+            var x = f.Id == 0 ? new OidcProvider() : await db.OidcProviders.FirstAsync(o => o.Id == f.Id);
+            if (f.Id == 0) db.OidcProviders.Add(x);
+            x.Name = f.Name.Trim();
+            x.Issuer = f.Issuer.Trim().TrimEnd('/');
+            x.ClientId = f.ClientId.Trim();
+            if (!string.IsNullOrEmpty(f.ClientSecret)) x.ClientSecret = f.ClientSecret;
+            x.Scopes = string.IsNullOrWhiteSpace(f.Scopes) ? "openid profile email" : f.Scopes.Trim();
+            x.UsernameClaim = string.IsNullOrWhiteSpace(f.UsernameClaim) ? "preferred_username" : f.UsernameClaim.Trim();
+            x.AutoRegister = f.AutoRegister;
+            x.Enabled = f.Enabled;
+        }, "Fournisseur enregistré.", "Fournisseur OIDC enregistré", f.Name);
+        if (ok) { editingProvider = false; await LoadListsAsync(); }
+    }
+
+    private async Task DeleteProviderAsync()
+    {
+        var id = p.Id;
+        var ok = await SaveAsync(async db => db.OidcProviders.Remove(await db.OidcProviders.FirstAsync(o => o.Id == id)),
+            "Fournisseur supprimé.", "Fournisseur OIDC supprimé", p.Name);
+        if (ok) { editingProvider = false; await LoadListsAsync(); }
+    }
+
+    private async Task CreateTokenAsync()
+    {
+        if (string.IsNullOrWhiteSpace(tokenName)) { Notify.Error("Donnez un nom au jeton."); return; }
+        var raw = "dp_" + TokenService.NewToken(32);
+        var ok = await SaveAsync(db =>
+        {
+            db.ApiTokens.Add(new ApiToken
+            {
+                Name = tokenName.Trim(),
+                TokenHash = TokenService.Hash(raw),
+                Prefix = raw[..8],
+                UserId = MyId!.Value,
+                ExpiresAt = tokenDays == 0 ? null : DateTime.UtcNow.AddDays(tokenDays),
+            });
+            return Task.CompletedTask;
+        }, "Jeton créé.", "Jeton d'API créé", tokenName);
+        if (ok) { newToken = raw; creatingToken = false; await LoadListsAsync(); }
+    }
+
+    private async Task RevokeTokenAsync(ApiToken t)
+    {
+        var ok = await SaveAsync(async db => db.ApiTokens.Remove(await db.ApiTokens.FirstAsync(x => x.Id == t.Id)),
+            "Jeton révoqué.", "Jeton d'API révoqué", t.Name);
+        if (ok) { newToken = null; await LoadListsAsync(); }
+    }
+}

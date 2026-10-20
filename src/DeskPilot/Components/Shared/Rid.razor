@@ -1,0 +1,16 @@
+@* RustDesk ID shown the way the client displays it: groups of three digits. *@
+<span class="rid @Class" title="@Value">@foreach (var g in Groups()) { <i>@g</i> }</span>
+
+@code {
+    [Parameter] public string? Value { get; set; }
+    [Parameter] public string? Class { get; set; }
+
+    private IEnumerable<string> Groups()
+    {
+        var v = Value ?? "";
+        if (v.Length == 0 || !v.All(char.IsDigit)) { yield return v; yield break; }
+        var head = v.Length % 3;
+        if (head > 0) yield return v[..head];
+        for (var i = head; i < v.Length; i += 3) yield return v.Substring(i, 3);
+    }
+}

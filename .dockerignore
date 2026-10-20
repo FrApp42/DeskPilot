@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+**/data/
+.git/
+tests/
+*.md
+hbbs/
+tests/hbbs-compat/target/

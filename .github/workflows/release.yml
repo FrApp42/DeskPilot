@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check-status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
+            
+            const checks = await github.rest.checks.listForRef({
+              owner,
+              repo,
+              ref: sha
+            });
+            
+            const failing = checks.data.check_runs.filter(run => run.name !== 'Release' && run.conclusion === 'failure');
+            if (failing.length > 0) {
+              core.setFailed('Some tests failed on this commit.');
+            }
+
+  publish:
+    needs: check-status
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish .NET application
+        run: |
+          dotnet publish src/DeskPilot/DeskPilot.csproj -c Release -o publish-output
+          cd publish-output
+          zip -r ../deskpilot-linux-x64.zip .
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push DeskPilot image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest
+
+      - name: Build and push hbbs image
+        uses: docker/build-push-action@v5
+        with:
+          context: hbbs
+          file: hbbs/Dockerfile.deskpilot
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-hbbs:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}-hbbs:latest
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: deskpilot-linux-x64.zip
+          generate_release_notes: true

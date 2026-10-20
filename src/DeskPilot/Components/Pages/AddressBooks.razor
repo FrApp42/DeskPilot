@@ -1,0 +1,269 @@
+@page "/address-books"
+@attribute [Authorize(Policy = ConsoleAuth.AdminPolicy)]
+@rendermode InteractiveServer
+@inherits AdminPage
+
+<PageTitle>Carnets d'adresses · DeskPilot</PageTitle>
+<Toasts />
+
+<div class="page-head">
+    <div>
+        <h1>Carnets d'adresses</h1>
+        <p>Les carnets partagés apparaissent dans le client de chaque personne avec qui ils sont partagés. Chaque utilisateur a aussi un carnet personnel, privé.</p>
+    </div>
+    <div class="actions"><button class="btn primary" @onclick="New">Créer un carnet partagé</button></div>
+</div>
+
+<div class="tabs" role="tablist">
+    <button role="tab" class="@(personal ? "" : "on")" aria-selected="@(!personal)" @onclick="() => SwitchAsync(false)">Partagés</button>
+    <button role="tab" class="@(personal ? "on" : "")" aria-selected="@personal" @onclick="() => SwitchAsync(true)">Personnels</button>
+</div>
+
+<section class="panel">
+    @if (books.Count == 0)
+    {
+        <div class="empty">@(personal ? "Aucun carnet personnel : il est créé à la première connexion d'un utilisateur dans le client." : "Aucun carnet partagé. Créez-en un pour donner à une équipe la même liste de machines.")</div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Nom</th><th>Propriétaire</th>@if (!personal) { <th>Partagé avec</th> }<th class="num">Machines</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var b in books)
+                    {
+                        <tr>
+                            <td><strong>@b.Name</strong>@if (!string.IsNullOrEmpty(b.Note)) { <span class="sub">@b.Note</span> }</td>
+                            <td>@b.Owner?.DisplayNameOrName</td>
+                            @if (!personal)
+                            {
+                                <td>@(b.Shares.Count == 0 ? "Personne" : string.Join(", ", b.Shares.Select(ShareLabel)))</td>
+                            }
+                            <td class="num">@b.Peers.Count</td>
+                            <td class="act">
+                                <button class="btn link" @onclick="() => OpenPeersAsync(b)">Machines</button>
+                                @if (!personal) { <button class="btn link" @onclick="() => Edit(b)">Partage</button> }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<Modal @bind-Open="editing" Title="@(form.Id == 0 ? "Nouveau carnet partagé" : form.Name)" Wide="true">
+    <ChildContent>
+        <div class="row">
+            <label class="field"><span>Nom</span><input type="text" @bind="form.Name" /><small>Utilisable dans preset-address-book-name.</small></label>
+            <label class="field"><span>Propriétaire</span>
+                <select @bind="form.OwnerId">
+                    @foreach (var u in users) { <option value="@u.Id">@u.DisplayNameOrName (@u.Name)</option> }
+                </select>
+            </label>
+        </div>
+        <label class="field"><span>Note</span><input type="text" @bind="form.Note" /></label>
+
+        <h3 style="margin:.5rem 0">Partage</h3>
+        @foreach (var s in form.Shares)
+        {
+            <div class="kv">
+                <select @bind="s.Target" aria-label="Destinataire">
+                    <option value="">Choisir…</option>
+                    <optgroup label="Groupes">
+                        @foreach (var g in userGroups) { <option value="g:@g.Id">Groupe @g.Name</option> }
+                    </optgroup>
+                    <optgroup label="Utilisateurs">
+                        @foreach (var u in users) { <option value="u:@u.Id">@u.DisplayNameOrName</option> }
+                    </optgroup>
+                </select>
+                <select @bind="s.Rule" aria-label="Droits">
+                    <option value="@ShareRule.Read">@Fmt.Rule(ShareRule.Read)</option>
+                    <option value="@ShareRule.ReadWrite">@Fmt.Rule(ShareRule.ReadWrite)</option>
+                    <option value="@ShareRule.FullControl">@Fmt.Rule(ShareRule.FullControl)</option>
+                </select>
+                <button class="btn small" @onclick="() => form.Shares.Remove(s)">Retirer</button>
+            </div>
+        }
+        <button class="btn small" @onclick="() => form.Shares.Add(new ShareRow())">Ajouter un destinataire</button>
+        <p class="hint">Lecture seule : voir et se connecter. Lecture et écriture : ajouter, modifier et retirer des machines et des étiquettes.</p>
+    </ChildContent>
+    <Footer>
+        @if (form.Id != 0) { <button class="btn danger" style="margin-right:auto" @onclick="DeleteAsync">Supprimer le carnet</button> }
+        <button class="btn" @onclick="() => editing = false">Annuler</button>
+        <button class="btn primary" @onclick="SaveBookAsync">Enregistrer</button>
+    </Footer>
+</Modal>
+
+<Modal @bind-Open="viewingPeers" Title="@($"Machines de « {peersOf?.Name} »")" Wide="true">
+    <ChildContent>
+        @if (peersOf is not null)
+        {
+            @if (!peersOf.IsPersonal)
+            {
+                <div class="kv" style="grid-template-columns: 1fr 1fr 1fr auto">
+                    <input type="text" placeholder="ID RustDesk" @bind="newPeer.Id" inputmode="numeric" aria-label="ID" />
+                    <input type="text" placeholder="Alias" @bind="newPeer.Alias" aria-label="Alias" />
+                    <input type="text" placeholder="Mot de passe partagé (optionnel)" @bind="newPeer.Password" aria-label="Mot de passe" />
+                    <button class="btn small primary" @onclick="AddPeerAsync">Ajouter</button>
+                </div>
+            }
+            @if (peers.Count == 0)
+            {
+                <div class="empty">Ce carnet est vide.</div>
+            }
+            else
+            {
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>ID</th><th>Alias</th><th>Machine</th><th>Étiquettes</th>@if (!peersOf.IsPersonal) { <th>Mot de passe</th> }<th></th></tr></thead>
+                        <tbody>
+                            @foreach (var p in peers)
+                            {
+                                <tr>
+                                    <td><Rid Value="@p.PeerId" /></td>
+                                    <td>@(p.Alias ?? "—")@if (!string.IsNullOrEmpty(p.Note)) { <span class="sub">@p.Note</span> }</td>
+                                    <td>@(p.Hostname ?? "—")<span class="sub">@p.Platform</span></td>
+                                    <td>@foreach (var t in p.Tags) { <span class="chip" style="margin-right:.25rem">@t</span> }</td>
+                                    @if (!peersOf.IsPersonal) { <td>@(string.IsNullOrEmpty(p.Password) ? "—" : "Enregistré")</td> }
+                                    <td class="act"><button class="btn link danger" @onclick="() => RemovePeerAsync(p)">Retirer</button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        }
+    </ChildContent>
+</Modal>
+
+@code {
+    private bool personal, editing, viewingPeers;
+    private List<AddressBook> books = [];
+    private List<User> users = [];
+    private List<UserGroup> userGroups = [];
+    private BookForm form = new();
+    private AddressBook? peersOf;
+    private List<AbPeer> peers = [];
+    private NewPeerForm newPeer = new();
+
+    private class ShareRow { public string Target = ""; public ShareRule Rule = ShareRule.Read; }
+    private class BookForm { public int Id, OwnerId; public string Name = "", Note = ""; public List<ShareRow> Shares = []; }
+    private class NewPeerForm { public string Id = "", Alias = "", Password = ""; }
+
+    protected override async Task LoadAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        users = await db.Users.AsNoTracking().OrderBy(u => u.Name).ToListAsync();
+        userGroups = await db.UserGroups.AsNoTracking().OrderBy(g => g.Name).ToListAsync();
+        await QueryAsync();
+    }
+
+    private async Task SwitchAsync(bool p) { personal = p; await QueryAsync(); }
+
+    private async Task QueryAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        books = await db.AddressBooks.AsNoTracking().AsSplitQuery()
+            .Include(b => b.Owner).Include(b => b.Peers)
+            .Include(b => b.Shares).ThenInclude(s => s.User)
+            .Include(b => b.Shares).ThenInclude(s => s.UserGroup)
+            .Where(b => b.IsPersonal == personal).OrderBy(b => b.Name).ThenBy(b => b.Owner!.Name).ToListAsync();
+    }
+
+    private static string ShareLabel(AbShare s)
+        => (s.UserGroup is not null ? "groupe " + s.UserGroup.Name : s.User?.DisplayNameOrName ?? "?") + $" ({Fmt.Rule(s.Rule).ToLowerInvariant()})";
+
+    private void New()
+    {
+        form = new BookForm { OwnerId = MyId ?? users.FirstOrDefault()?.Id ?? 0 };
+        editing = true;
+    }
+
+    private void Edit(AddressBook b)
+    {
+        form = new BookForm
+        {
+            Id = b.Id, Name = b.Name, Note = b.Note ?? "", OwnerId = b.OwnerId,
+            Shares = b.Shares.Select(s => new ShareRow { Target = s.UserGroupId is { } g ? $"g:{g}" : $"u:{s.UserId}", Rule = s.Rule }).ToList(),
+        };
+        editing = true;
+    }
+
+    private async Task SaveBookAsync()
+    {
+        if (string.IsNullOrWhiteSpace(form.Name)) { Notify.Error("Le nom est obligatoire."); return; }
+        var f = form;
+        var shares = f.Shares.Where(s => s.Target.Length > 2).GroupBy(s => s.Target).Select(g => g.OrderByDescending(x => x.Rule).First()).ToList();
+        var ok = await SaveAsync(async db =>
+        {
+            var b = f.Id == 0 ? new AddressBook() : await db.AddressBooks.Include(x => x.Shares).FirstAsync(x => x.Id == f.Id);
+            if (f.Id == 0) db.AddressBooks.Add(b);
+            b.Name = f.Name.Trim();
+            b.Note = string.IsNullOrWhiteSpace(f.Note) ? null : f.Note.Trim();
+            b.OwnerId = f.OwnerId;
+            db.AbShares.RemoveRange(b.Shares);
+            foreach (var s in shares)
+            {
+                var id = int.Parse(s.Target[2..]);
+                b.Shares.Add(new AbShare
+                {
+                    UserId = s.Target.StartsWith("u:") ? id : null,
+                    UserGroupId = s.Target.StartsWith("g:") ? id : null,
+                    Rule = s.Rule,
+                });
+            }
+        }, "Carnet enregistré.", "Carnet d'adresses enregistré", f.Name);
+        if (ok) { editing = false; await QueryAsync(); }
+    }
+
+    private async Task DeleteAsync()
+    {
+        var id = form.Id;
+        var ok = await SaveAsync(async db => db.AddressBooks.Remove(await db.AddressBooks.FirstAsync(x => x.Id == id)),
+            "Carnet supprimé.", "Carnet d'adresses supprimé", form.Name);
+        if (ok) { editing = false; await QueryAsync(); }
+    }
+
+    private async Task OpenPeersAsync(AddressBook b)
+    {
+        peersOf = b;
+        newPeer = new NewPeerForm();
+        await LoadPeersAsync();
+        viewingPeers = true;
+    }
+
+    private async Task LoadPeersAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        peers = await db.AbPeers.AsNoTracking().Where(p => p.AddressBookId == peersOf!.Id).OrderBy(p => p.Alias ?? p.PeerId).ToListAsync();
+    }
+
+    private async Task AddPeerAsync()
+    {
+        var id = newPeer.Id.Replace(" ", "").Trim();
+        if (id.Length == 0) { Notify.Error("Saisissez l'ID RustDesk de la machine."); return; }
+        if (peers.Any(p => p.PeerId == id)) { Notify.Error("Cette machine est déjà dans le carnet."); return; }
+        var abId = peersOf!.Id;
+        var np = newPeer;
+        var ok = await SaveAsync(async db =>
+        {
+            var known = await db.Devices.AsNoTracking().FirstOrDefaultAsync(d => d.RustdeskId == id);
+            db.AbPeers.Add(new AbPeer
+            {
+                AddressBookId = abId, PeerId = id,
+                Alias = string.IsNullOrWhiteSpace(np.Alias) ? null : np.Alias.Trim(),
+                Password = string.IsNullOrEmpty(np.Password) ? null : np.Password,
+                Hostname = known?.Hostname, Username = known?.Username, Platform = DeviceService.PlatformFromOs(known?.Os),
+            });
+        }, "Machine ajoutée.", "Machine ajoutée au carnet", $"{peersOf.Name} / {id}");
+        if (ok) { newPeer = new NewPeerForm(); await LoadPeersAsync(); await QueryAsync(); }
+    }
+
+    private async Task RemovePeerAsync(AbPeer p)
+    {
+        var ok = await SaveAsync(async db => db.AbPeers.Remove(await db.AbPeers.FirstAsync(x => x.Id == p.Id)),
+            "Machine retirée.", "Machine retirée du carnet", $"{peersOf!.Name} / {p.PeerId}");
+        if (ok) { await LoadPeersAsync(); await QueryAsync(); }
+    }
+}

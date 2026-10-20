@@ -1,0 +1,99 @@
+@page "/login"
+@layout BareLayout
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+<PageTitle>Connexion · DeskPilot</PageTitle>
+
+<div class="login">
+    <section class="login-art">
+        <a class="brand" href="/"><BrandMark /> DeskPilot</a>
+        <div>
+            <span class="rid">@SampleId</span>
+            <p>Console d'administration de votre serveur RustDesk auto-hébergé : appareils, comptes, carnets d'adresses, stratégies et journaux de connexion.</p>
+        </div>
+        <small>Logiciel libre, AGPL-3.0</small>
+    </section>
+
+    <section class="login-form">
+        @if (!string.IsNullOrEmpty(Challenge))
+        {
+            <form method="post" action="/account/login/2fa">
+                <AntiforgeryToken />
+                <h1>Vérification</h1>
+                @if (!string.IsNullOrEmpty(Error))
+                {
+                    <div class="notice err" role="alert">@Translate(Error)</div>
+                }
+                <input type="hidden" name="challenge" value="@Challenge" />
+                <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+                <label class="field">
+                    <span>Code de l'application d'authentification</span>
+                    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,8}" required autofocus />
+                </label>
+                <button class="btn primary" type="submit">Vérifier</button>
+                <p class="hint"><a href="/login">Recommencer la connexion</a></p>
+            </form>
+        }
+        else
+        {
+            <form method="post" action="/account/login">
+                <AntiforgeryToken />
+                <h1>Connexion</h1>
+                @if (!string.IsNullOrEmpty(Error))
+                {
+                    <div class="notice err" role="alert">@Translate(Error)</div>
+                }
+                <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+                <label class="field">
+                    <span>Nom d'utilisateur ou e-mail</span>
+                    <input type="text" name="username" autocomplete="username" required autofocus />
+                </label>
+                <label class="field">
+                    <span>Mot de passe</span>
+                    <input type="password" name="password" autocomplete="current-password" required />
+                </label>
+                <button class="btn primary" type="submit">Se connecter</button>
+
+                @if (providers.Count > 0)
+                {
+                    <div class="or">ou</div>
+                    <div class="sso">
+                        @foreach (var p in providers)
+                        {
+                            <a class="btn" href="/account/oidc/@Uri.EscapeDataString(p)?returnUrl=@Uri.EscapeDataString(ReturnUrl ?? "/")">Continuer avec @p</a>
+                        }
+                    </div>
+                }
+            </form>
+        }
+    </section>
+</div>
+
+@code {
+    [SupplyParameterFromQuery] public string? Error { get; set; }
+    [SupplyParameterFromQuery] public string? Challenge { get; set; }
+    [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+
+    private List<string> providers = [];
+    private static readonly string SampleId = "1 284 093 557";
+
+    protected override async Task OnInitializedAsync()
+    {
+        ReturnUrl = ConsoleAuth.SafeReturnUrl(ReturnUrl);
+        await using var db = await DbFactory.CreateDbContextAsync();
+        providers = await db.OidcProviders.Where(p => p.Enabled).OrderBy(p => p.Name).Select(p => p.Name).ToListAsync();
+    }
+
+    private static string Translate(string e) => e switch
+    {
+        "Wrong username or password" => "Identifiant ou mot de passe incorrect.",
+        "Username or password is empty" => "Renseignez l'identifiant et le mot de passe.",
+        "Too many failed attempts, try again later" => "Trop de tentatives. Réessayez dans quelques minutes.",
+        "User is disabled" => "Ce compte est désactivé.",
+        "Wrong verification code" => "Code incorrect. Vérifiez l'heure de votre téléphone et réessayez.",
+        "Verification expired, please log in again" => "La vérification a expiré, reconnectez-vous.",
+        "provider" => "Fournisseur d'identité inconnu ou désactivé.",
+        "User not registered" => "Aucun compte ne correspond à cet identifiant.",
+        _ => e,
+    };
+}

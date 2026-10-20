@@ -1,0 +1,14 @@
+<span class="presence @(Online ? "on" : "") @(Busy ? "busy" : "")">@Text()</span>
+
+@code {
+    [Parameter] public bool Online { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public DateTime? LastSeen { get; set; }
+
+    private string Text()
+    {
+        if (Busy) return "En session";
+        if (Online) return "En ligne";
+        return LastSeen is null ? "Jamais vu" : "Vu " + Fmt.Ago(LastSeen.Value);
+    }
+}

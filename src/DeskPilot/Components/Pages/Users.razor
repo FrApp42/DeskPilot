@@ -1,0 +1,219 @@
+@page "/users"
+@attribute [Authorize(Policy = ConsoleAuth.AdminPolicy)]
+@rendermode InteractiveServer
+@inherits AdminPage
+
+<PageTitle>Utilisateurs · DeskPilot</PageTitle>
+<Toasts />
+
+<div class="page-head">
+    <div>
+        <h1>Utilisateurs</h1>
+        <p>Comptes qui peuvent se connecter au client RustDesk et à cette console. Les comptes LDAP et OIDC sont créés automatiquement à leur première connexion.</p>
+    </div>
+    <div class="actions"><button class="btn primary" @onclick="New">Créer un utilisateur</button></div>
+</div>
+
+<section class="panel">
+    <div class="panel-head">
+        <div class="toolbar">
+            <input type="search" placeholder="Nom, e-mail…" @bind="search" @bind:event="oninput" @bind:after="QueryAsync" aria-label="Rechercher" />
+        </div>
+        <span class="hint">@rows.Count utilisateur(s)</span>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Utilisateur</th><th>Rôle</th><th>Authentification</th><th>Groupe</th><th class="num">Appareils</th><th>Dernière connexion</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var u in rows)
+                {
+                    <tr>
+                        <td><strong>@u.DisplayNameOrName</strong><span class="sub">@u.Name @(u.Email is null ? "" : $"<{u.Email}>")</span></td>
+                        <td>
+                            @if (u.IsAdmin) { <span class="chip live">Administrateur</span> } else { <span class="chip">Utilisateur</span> }
+                            @if (u.Status == UserStatus.Disabled) { <span class="chip danger">Désactivé</span> }
+                        </td>
+                        <td>@AuthLabel(u)@if (u.TotpEnabled) { <span class="chip" style="margin-left:.3rem">2FA</span> }</td>
+                        <td>@(u.UserGroup?.Name ?? "—")</td>
+                        <td class="num">@deviceCounts.GetValueOrDefault(u.Id)</td>
+                        <td>@(u.LastLoginAt is null ? "Jamais" : Fmt.Ago(u.LastLoginAt.Value))</td>
+                        <td class="act"><button class="btn link" @onclick="() => Edit(u)">Modifier</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<Modal @bind-Open="editing" Title="@(form.Id == 0 ? "Nouvel utilisateur" : $"Modifier {form.Name}")">
+    <ChildContent>
+        @if (error is not null) { <div class="notice err">@error</div> }
+        <div class="row">
+            <label class="field"><span>Nom d'utilisateur</span>
+                <input type="text" @bind="form.Name" disabled="@(form.ThirdAuthType is not null)" autocomplete="off" />
+                <small>Identifiant de connexion, sans espace.</small>
+            </label>
+            <label class="field"><span>Nom affiché</span><input type="text" @bind="form.DisplayName" /></label>
+        </div>
+        <label class="field"><span>E-mail</span><input type="email" @bind="form.Email" /></label>
+        <div class="row">
+            <label class="field"><span>Groupe</span>
+                <select @bind="form.GroupId">
+                    <option value="0">Aucun</option>
+                    @foreach (var g in groups) { <option value="@g.Id">@g.Name</option> }
+                </select>
+                <small>Les membres d'un même groupe voient leurs appareils respectifs.</small>
+            </label>
+            <label class="field"><span>Stratégie</span>
+                <select @bind="form.StrategyId">
+                    <option value="0">Aucune</option>
+                    @foreach (var s in strategies) { <option value="@s.Id">@s.Name</option> }
+                </select>
+                <small>Appliquée aux appareils de l'utilisateur sans stratégie propre.</small>
+            </label>
+        </div>
+        @if (form.ThirdAuthType is null)
+        {
+            <label class="field"><span>@(form.Id == 0 ? "Mot de passe" : "Nouveau mot de passe")</span>
+                <input type="password" @bind="form.Password" autocomplete="new-password" />
+                <small>@(form.Id == 0 ? "8 caractères minimum." : "Laisser vide pour conserver le mot de passe actuel.")</small>
+            </label>
+        }
+        else
+        {
+            <p class="hint">Compte @AuthLabel(form.ThirdAuthType) : le mot de passe est géré par le fournisseur d'identité.</p>
+        }
+        <label class="field"><span>Note</span><input type="text" @bind="form.Note" /></label>
+        <label class="check"><input type="checkbox" @bind="form.IsAdmin" disabled="@(form.Id == MyId)" /><span>Administrateur<small>Accès complet à cette console et à tous les appareils.</small></span></label>
+        <label class="check"><input type="checkbox" @bind="form.Disabled" disabled="@(form.Id == MyId)" /><span>Compte désactivé<small>Bloque la connexion et invalide les sessions client existantes.</small></span></label>
+        @if (form.Id != 0 && form.TotpEnabled)
+        {
+            <label class="check"><input type="checkbox" @bind="form.ResetTotp" /><span>Réinitialiser la double authentification<small>À utiliser si l'utilisateur a perdu son téléphone.</small></span></label>
+        }
+        @if (form.Id != 0)
+        {
+            <label class="check"><input type="checkbox" @bind="form.RevokeTokens" /><span>Déconnecter tous ses clients RustDesk</span></label>
+        }
+    </ChildContent>
+    <Footer>
+        @if (form.Id != 0 && form.Id != MyId)
+        {
+            <button class="btn danger" style="margin-right:auto" @onclick="DeleteAsync">Supprimer</button>
+        }
+        <button class="btn" @onclick="() => editing = false">Annuler</button>
+        <button class="btn primary" @onclick="SaveUserAsync">@(form.Id == 0 ? "Créer l'utilisateur" : "Enregistrer")</button>
+    </Footer>
+</Modal>
+
+@code {
+    private string search = "";
+    private string? error;
+    private List<User> rows = [];
+    private List<UserGroup> groups = [];
+    private List<Strategy> strategies = [];
+    private Dictionary<int, int> deviceCounts = [];
+    private bool editing;
+    private UserForm form = new();
+
+    private class UserForm
+    {
+        public int Id, GroupId, StrategyId;
+        public string Name = "", DisplayName = "", Email = "", Note = "", Password = "";
+        public string? ThirdAuthType;
+        public bool IsAdmin, Disabled, TotpEnabled, ResetTotp, RevokeTokens;
+    }
+
+    protected override async Task LoadAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        groups = await db.UserGroups.AsNoTracking().OrderBy(g => g.Name).ToListAsync();
+        strategies = await db.Strategies.AsNoTracking().OrderBy(s => s.Name).ToListAsync();
+        await QueryAsync();
+    }
+
+    private async Task QueryAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var q = db.Users.AsNoTracking().Include(u => u.UserGroup).AsQueryable();
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var t = $"%{search.Trim()}%";
+            q = q.Where(u => EF.Functions.ILike(u.Name, t) || EF.Functions.ILike(u.DisplayName ?? "", t) || EF.Functions.ILike(u.Email ?? "", t));
+        }
+        rows = await q.OrderBy(u => u.Name).Take(500).ToListAsync();
+        deviceCounts = await db.Devices.Where(d => d.UserId != null).GroupBy(d => d.UserId!.Value)
+            .Select(g => new { g.Key, C = g.Count() }).ToDictionaryAsync(x => x.Key, x => x.C);
+    }
+
+    private static string AuthLabel(User u) => AuthLabel(u.ThirdAuthType);
+    private static string AuthLabel(string? t) => t switch
+    {
+        null => "Local",
+        "ldap" => "LDAP",
+        _ when t.StartsWith("oidc/") => "OIDC " + t[5..],
+        _ => t,
+    };
+
+    private void New()
+    {
+        error = null;
+        form = new UserForm();
+        editing = true;
+    }
+
+    private void Edit(User u)
+    {
+        error = null;
+        form = new UserForm
+        {
+            Id = u.Id, Name = u.Name, DisplayName = u.DisplayName ?? "", Email = u.Email ?? "", Note = u.Note ?? "",
+            GroupId = u.UserGroupId ?? 0, StrategyId = u.StrategyId ?? 0, IsAdmin = u.IsAdmin,
+            Disabled = u.Status == UserStatus.Disabled, TotpEnabled = u.TotpEnabled, ThirdAuthType = u.ThirdAuthType,
+        };
+        editing = true;
+    }
+
+    private async Task SaveUserAsync()
+    {
+        error = null;
+        form.Name = form.Name.Trim();
+        if (form.Name.Length == 0 || form.Name.Any(char.IsWhiteSpace)) { error = "Le nom d'utilisateur est obligatoire et ne doit pas contenir d'espace."; return; }
+        if (form.Id == 0 && form.Password.Length < 8) { error = "Le mot de passe doit contenir au moins 8 caractères."; return; }
+        if (form.Id != 0 && form.Password.Length is > 0 and < 8) { error = "Le mot de passe doit contenir au moins 8 caractères."; return; }
+
+        var f = form;
+        var ok = await SaveAsync(async db =>
+        {
+            var u = f.Id == 0 ? new User() : await db.Users.FindAsync(f.Id) ?? throw new InvalidOperationException("Utilisateur introuvable");
+            if (f.Id == 0) db.Users.Add(u);
+            if (u.ThirdAuthType is null) u.Name = f.Name;
+            u.DisplayName = NullIfEmpty(f.DisplayName);
+            u.Email = NullIfEmpty(f.Email);
+            u.Note = NullIfEmpty(f.Note);
+            u.UserGroupId = f.GroupId == 0 ? null : f.GroupId;
+            u.StrategyId = f.StrategyId == 0 ? null : f.StrategyId;
+            if (f.Id != MyId)
+            {
+                u.IsAdmin = f.IsAdmin;
+                u.Status = f.Disabled ? UserStatus.Disabled : UserStatus.Normal;
+            }
+            if (u.ThirdAuthType is null && f.Password.Length > 0) u.PasswordHash = AuthService.HashPassword(u, f.Password);
+            if (f.ResetTotp) { u.TotpEnabled = false; u.TotpSecret = null; }
+            if (f.Id != 0 && (f.RevokeTokens || f.Disabled || f.Password.Length > 0))
+                await db.AccessTokens.Where(t => t.UserId == f.Id).ExecuteDeleteAsync();
+        }, form.Id == 0 ? "Utilisateur créé." : "Utilisateur enregistré.", form.Id == 0 ? "Création d'utilisateur" : "Modification d'utilisateur", form.Name);
+        if (ok) { editing = false; await QueryAsync(); }
+    }
+
+    private async Task DeleteAsync()
+    {
+        var id = form.Id;
+        var ok = await SaveAsync(async db =>
+        {
+            db.Users.Remove(await db.Users.FindAsync(id) ?? throw new InvalidOperationException("Utilisateur introuvable"));
+        }, "Utilisateur supprimé, ainsi que ses carnets d'adresses.", "Suppression d'utilisateur", form.Name);
+        if (ok) { editing = false; await QueryAsync(); }
+    }
+
+    private static string? NullIfEmpty(string s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+}
